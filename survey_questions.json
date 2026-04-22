@@ -1,0 +1,114 @@
+[
+  {
+    "id": 1,
+    "section_id": "background",
+    "type": "single_choice",
+    "question": "Hey there! What year are you in college?",
+    "options": [
+      "Freshman",
+      "Sophomore",
+      "Junior",
+      "Senior",
+      "Graduate Student"
+    ]
+  },
+  {
+    "id": 2,
+    "section_id": "background",
+    "type": "single_choice",
+    "question": "How often do you use online learning platforms?",
+    "options": [
+      "Daily",
+      "A few times a week",
+      "Once a week",
+      "Rarely",
+      "Never"
+    ]
+  },
+  {
+    "id": 3,
+    "section_id": "core_evaluation_1",
+    "type": "single_choice",
+    "question": "What do you think is the best feature of the online learning platforms you use?",
+    "options": [
+      "Ease of Navigation",
+      "Quality of Content",
+      "Interactive Features",
+      "Accessibility",
+      "Other"
+    ]
+  },
+  {
+    "id": 4,
+    "section_id": "core_evaluation_1",
+    "type": "multiple_choice",
+    "question": "Which of these aspects do you find most helpful? (Select all that apply)",
+    "options": [
+      "Video tutorials",
+      "Discussion forums",
+      "Online quizzes",
+      "Live webinars",
+      "Peer collaboration tools"
+    ]
+  },
+  {
+    "id": 5,
+    "section_id": "core_evaluation_1",
+    "type": "multiple_choice",
+    "question": "What makes you feel more engaged during your online classes? (Select all that apply)",
+    "options": [
+      "Real-time chat",
+      "Virtual breakout rooms",
+      "Gamification elements",
+      "Personalized learning paths",
+      "Regular feedback"
+    ]
+  },
+  {
+    "id": 6,
+    "section_id": "core_evaluation_2",
+    "type": "single_choice",
+    "question": "What's the biggest challenge you face when using online learning platforms?",
+    "options": [
+      "Technical glitches",
+      "User interface design",
+      "Lack of interaction",
+      "Content overload",
+      "Other"
+    ]
+  },
+  {
+    "id": 7,
+    "section_id": "core_evaluation_2",
+    "type": "multiple_choice",
+    "question": "Which of these issues have you encountered while using online learning platforms? (Select all that apply)",
+    "options": [
+      "Slow loading times",
+      "Difficult to navigate",
+      "Limited accessibility options",
+      "Outdated content",
+      "Poor mobile support"
+    ]
+  },
+  {
+    "id": 8,
+    "section_id": "core_evaluation_2",
+    "type": "text",
+    "question": "Can you describe a specific instance where you faced difficulties using an online learning platform?",
+    "options": []
+  },
+  {
+    "id": 9,
+    "section_id": "open_feedback",
+    "type": "text",
+    "question": "Got any tips or ideas to make online learning platforms even better? Share away!",
+    "options": []
+  },
+  {
+    "id": 10,
+    "section_id": "open_feedback",
+    "type": "text",
+    "question": "Is there anything else you'd like to add about your experience with online learning platforms?",
+    "options": []
+  }
+]
