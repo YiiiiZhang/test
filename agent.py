@@ -2,6 +2,8 @@ import json
 import inspect
 import re
 from llm import LocalQwenLLM
+from json import JSONDecoder
+from typing import Optional
 from context_store import ConversationContext
 from tool import (
     planer, requirements_parser, requirements_parser_check, generate_question,
@@ -66,12 +68,48 @@ class QAOrchestrator:
             
         step_tools = current_step.tools if current_step else []
         return list(set(step_tools + self.global_tools))
-    def _parse_tool_call(self, text: str) -> dict | None:
-        match = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
-        if not match: return None
-        try: return json.loads(match.group(1))
-        except: return None
+    def _parse_tool_call(self, text: str) -> Optional[dict]:
+        def is_valid_tool_call(obj: object) -> bool:
+            """Strict validation of tool-call schema."""
+            return (
+                isinstance(obj, dict)
+                and isinstance(obj.get("name"), str)
+                and isinstance(obj.get("params"), dict)
+            )
 
+        decoder = JSONDecoder()
+        fence_pattern = re.compile(
+            r"```(?:json)?\s*(.*?)\s*```",
+            re.DOTALL | re.IGNORECASE,
+        )
+
+        for match in fence_pattern.finditer(text):
+            candidate = match.group(1).strip()
+
+            try:
+                obj = json.loads(candidate)
+                if is_valid_tool_call(obj):
+                    return obj
+            except json.JSONDecodeError:
+                continue
+        idx = 0
+
+        while idx < len(text):
+            start = text.find("{", idx)
+            if start == -1:
+                break
+            try:
+                obj, end = decoder.raw_decode(text, start)
+
+                if is_valid_tool_call(obj):
+                    return obj
+
+                idx = end
+
+            except json.JSONDecodeError:
+                idx = start + 1
+
+        return None
     def _build_agent_prompt(self) -> list[dict[str, str]]:
         # 1. 构建计划状态区块
         plan_lines = ["[Current Task Plan]"]
@@ -148,8 +186,6 @@ class QAOrchestrator:
 
             tool_call = self._parse_tool_call(llm_response)
             
-            # 【核心修改点】：如果在任务进行中，LLM 没有调用工具而是输出了纯文本（比如用户中途打断提问）
-            # 也直接把纯文本返回给用户，实现执行中的对话穿插
             if not tool_call:
                 return llm_response
 
