@@ -1,6 +1,6 @@
 {
     "LLM":{
-        "model_path": "/dss/dssmcmlfs01/pn25ju/pn25ju-dss-0000/models/Qwen2.5-32B-Instruct",
+        "model_path": "/dss/dssmcmlfs01/pn25ju/pn25ju-dss-0000/models/Qwen2.5-14B-Instruct",
         "temperature": 0.1,
         "max_tokens": 2048,
         "down_sample": false,
