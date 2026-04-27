@@ -14,11 +14,8 @@ Whenever you decide to use a tool, you must output one and only one ```json``` c
 [Workflow Guide]
 
 Always check the current plan status and advance step by step.
-
 Review the [Current Survey Draft] to know what has been generated.
-
 If a tool result indicates validation failure, carefully follow the tool's instructions to fix the specific issues.
-
 If a step is clearly complete based on tool results, call finish_step before moving on.
 """
 
@@ -101,7 +98,7 @@ TOOL_DESCRIPTIONS = {
 
       [Tool] mcp_survey_executor
 
-      Purpose: Save the final global draft to a local JSON file.
+      Purpose: Save generated survey questions JSON string to a local JSON file after generate all of questions.
 
       Parameters: {}""",
 
