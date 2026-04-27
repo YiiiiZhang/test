@@ -60,9 +60,12 @@ class QAOrchestrator:
 
     def _get_allowed_tools_for_current_step(self) -> list[str]:
         current_step = self._get_current_step()
+        # 如果任务全部完成，不再提供任何工具，强制进入纯文本闲聊模式
+        if not current_step:
+            return []
+            
         step_tools = current_step.tools if current_step else []
         return list(set(step_tools + self.global_tools))
-
     def _parse_tool_call(self, text: str) -> dict | None:
         match = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
         if not match: return None
@@ -72,9 +75,17 @@ class QAOrchestrator:
     def _build_agent_prompt(self) -> list[dict[str, str]]:
         # 1. 构建计划状态区块
         plan_lines = ["[Current Task Plan]"]
+        all_completed = True
+        
         for idx, step in enumerate(self.plan.steps, start=1):
             plan_lines.append(f"Step {idx}. {step.title} | status={step.status} | description={step.description}")
-            if step.result: plan_lines.append(f"Step {idx} result summary: {step.result}")
+            if step.result: 
+                plan_lines.append(f"Step {idx} result summary: {step.result}")
+            if step.status != "completed":
+                all_completed = False
+
+        if all_completed:
+            plan_lines.append("\n[Notice]: ALL STEPS COMPLETED. You are now in free-chat mode to answer the user's questions about the survey.")
 
         # 2. 构建动态工具区块
         allowed_tools = self._get_allowed_tools_for_current_step()
@@ -84,14 +95,12 @@ class QAOrchestrator:
                 if t_name in TOOL_DESCRIPTIONS:
                     tools_section += TOOL_DESCRIPTIONS[t_name] + "\n"
         else:
-            tools_section += "No tools available. Please respond directly.\n"
+            tools_section += "No tools available. Please respond to the user directly in plain text.\n"
 
-        # 3. 核心：构建草稿本区块反馈给Agent
-        draft_section = "[Current Survey Draft]\n"
-        if self.plan.survey_draft:
-            draft_section += json.dumps(self.plan.survey_draft, ensure_ascii=False, indent=2) + "\n"
-        else:
-            draft_section += "The draft is currently empty.\n"
+        # 3. 构建草稿本区块
+        draft_section = "[Current Global Draft Data]\n"
+        draft_dict = self.plan.draft.dict() if hasattr(self.plan.draft, 'dict') else self.plan.draft.model_dump()
+        draft_section += json.dumps(draft_dict, ensure_ascii=False, indent=2) + "\n"
 
         system_content = (
             SYSTEM_PROMPT_TEMPLATE + "\n\n" +
@@ -107,24 +116,26 @@ class QAOrchestrator:
     def run(self, user_input: str) -> str:
         self.context.add_user_message(user_input)
 
-        # 用于管控每个子任务的迭代重置
         current_step_title = None
         step_iterations = 0
-        total_max_failsafe = 50 # 全局安全锁防止死循环
+        total_max_failsafe = 50 
 
         for global_iter in range(total_max_failsafe):
             current_step = self._get_current_step()
             
-            # 成功走完所有步骤
+            # 【核心修改点】：如果当前没有 pending 的任务（即任务全完成）
+            # 不要 return 死代码，而是调用一次 LLM 让它进行自然语言回复
             if not current_step:
-                return "All tasks completed! (No pending steps)"
+                messages = self._build_agent_prompt()
+                print("\n[Agent thinking in Free Chat Mode] ...")
+                llm_response = self.llm.chat(messages)
+                self.context.add_assistant_message(llm_response)
+                return llm_response # 对话结束后直接返回给用户
                 
-            # 如果流转到了新步骤，重置迭代次数
             if current_step.title != current_step_title:
                 current_step_title = current_step.title
                 step_iterations = 0
 
-            # 超过单步的最大迭代次数保护
             if step_iterations >= self.max_iterations:
                 return f"System busy: exceeded max iterations ({self.max_iterations}) in step '{current_step_title}'."
 
@@ -136,13 +147,15 @@ class QAOrchestrator:
             self.context.add_assistant_message(llm_response)
 
             tool_call = self._parse_tool_call(llm_response)
+            
+            # 【核心修改点】：如果在任务进行中，LLM 没有调用工具而是输出了纯文本（比如用户中途打断提问）
+            # 也直接把纯文本返回给用户，实现执行中的对话穿插
             if not tool_call:
                 return llm_response
 
             tool_name = tool_call.get("name")
             tool_params = tool_call.get("params", {})
 
-            # 严格权限校验
             allowed_tools = self._get_allowed_tools_for_current_step()
             if tool_name not in allowed_tools:
                 error_msg = f"System error: tool '{tool_name}' is not allowed in step '{current_step_title}'. Allowed: {allowed_tools}"
@@ -151,9 +164,9 @@ class QAOrchestrator:
                 continue
 
             print(f"-> Calling tool: {tool_name}")
-            print(f"-> Parameters: {json.dumps(tool_params, ensure_ascii=False)}")
-
+            
             try:
+                import inspect
                 func = self.tools_registry[tool_name]
                 if "llm" in func.__code__.co_varnames: tool_params["llm"] = self.llm
                 if "plan" in func.__code__.co_varnames: tool_params["plan"] = self.plan
@@ -168,11 +181,8 @@ class QAOrchestrator:
                 observation_msg = f"Tool {tool_name} finished. Result:\n{tool_result}\nDecide next step."
                 self.context.add_user_message(observation_msg)
 
-                if tool_name == "generate_question":
-                    return str(tool_result)
-
-                if tool_name == "mcp_survey_executor" and "success" in str(tool_result).lower():
-                    return f"Task completed. Final Execution result:\n{tool_result}"
+                # 注：这里移除了之前遇到 mcp_survey_executor 就 return 的逻辑。
+                # 让系统自然走到下一个循环，发现所有任务完成，再由 LLM 自己说出“任务已完成”的话。
 
             except Exception as e:
                 error_msg = f"Exception executing tool {tool_name}: {e}"

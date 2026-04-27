@@ -111,5 +111,7 @@ TOOL_DESCRIPTIONS = {
 
       Purpose: Solidify the stage result and mark the current plan step as completed.
 
-      Parameters: {"step_title": "the English step name defined in the plan", "result_summary": "essential result summary produced by that step"}"""
+      Parameters: {"step_title": "the English step name defined in the plan", "result_summary": "essential result summary produced by that step"}
+      WARNING: Do not call this tool prematurely. You must ensure the core required tool for the current step has been successfully executed first."""
+      
 }
