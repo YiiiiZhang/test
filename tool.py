@@ -335,20 +335,33 @@ def mcp_survey_executor(
     )
 
 
+# tool.py (修改 finish_step 函数)
+
 def finish_step(plan: Plan, context: ConversationContext, step_title: str, result_summary: str) -> str:
     """Mark a plan step as completed and trim redundant context."""
-    for step in plan.steps:
-        if step.title == step_title:
-            if step.status == "completed":
-                return f"Notice: step '{step_title}' is already completed."
+    
+    # 1. 规范化输入：转小写，并将下划线替换为空格
+    # 例如将 "requirement_analysis" 转换为 "requirement analysis"
+    normalized_input = step_title.lower().replace("_", " ")
 
+    for step in plan.steps:
+        # 2. 规范化目标标题
+        normalized_target = step.title.lower().replace("_", " ")
+        
+        if normalized_target == normalized_input:
+            if step.status == "completed":
+                return f"Notice: step '{step.title}' is already completed."
+            
             step.status = "completed"
             step.result = result_summary
-
             context.clear()
+            
+            # 这里的提示语明确告诉 LLM 进入下一个 pending step
             context.add_user_message(
-                f"[System notice] Step '{step_title}' is completed. Core output has been stored in the task plan. Continue with the next pending step."
+                f"[System notice] Step '{step.title}' is completed. Core output has been stored in the task plan. Continue with the tools for the next pending step."
             )
-            return f"Success: step '{step_title}' has been marked as completed."
-
-    return f"Error: no step named '{step_title}' was found in the plan."
+            return f"Success: step '{step.title}' has been marked as completed."
+            
+    # 3. 容错提示：如果找不到，把合法的 step_title 列表抛给 LLM 帮助其纠正
+    valid_titles = [s.title for s in plan.steps]
+    return f"Error: no step named '{step_title}' was found in the plan. Available valid step titles are: {valid_titles}"

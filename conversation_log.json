@@ -17,7 +17,7 @@
   },
   {
     "role": "user",
-    "content": "Tool feedback: System error: tool 'survey_structure_planning' was not found. Please check the available tool list and call again."
+    "content": "Tool feedback: System error: tool ' ' was not found. Please check the available tool list and call again."
   },
   {
     "role": "assistant",
