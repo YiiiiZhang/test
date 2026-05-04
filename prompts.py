@@ -4,12 +4,12 @@ from state import Plan
 # --- 工具元数据定义 ---
 TOOL_META = {
     "requirement_parser": {
-        "purpose": "extract structured information from the user's natural-language input.",
-        "params": '{"user_input": "the user\'s latest reply or original request"}'
+        "purpose": "Extract new survey requirements from user input and merge them with previously extracted data.",
+        "params": '{"user_input": "the user\'s latest reply", "previous_data": "the JSON string of previously extracted requirements (use {} if this is the first time)"}'
     },
     "requirement_check": {
-        "purpose": "check whether the parsed requirements are complete and correct.",
-        "params": '{"user_input": "the user\'s original input", "parse_data": "the JSON string returned by requirement_parser"}'
+        "purpose": "check whether the parsed requirements have all the mandatory fields filled.",
+        "params": '{"parse_data": "the JSON string returned by requirement_parser"}'
     },
     "generate_question": {
         "purpose": "when the user's requirements are incomplete, generate a follow-up question based on the error information.",

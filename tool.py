@@ -55,45 +55,11 @@ def generate_question(llm: LocalQwenLLM, err_message: str) -> str:
     return llm.chat([{"role": "user", "content": prompt.format(err_message=err_message)}]).strip()
 
 
-def requirements_parser_check(llm: LocalQwenLLM, user_input: str, parse_data) -> str:
-    """Check whether the parsed requirements are complete and accurate."""
-    prompt = """
-        You are a quality inspector for survey-creation requirements.
-        Validate whether the extracted requirement data `parse_data` matches the user's latest input `user_input`, and check whether all required fields are present.
-
-        Required fields: survey_topic, survey_object, survey_goal.
-
-        Output JSON in the following format:
-        {{
-            "next_steps": "Consistent and comprehensive" | "Supplementary information" | "Re-extraction",
-            "error_type": "short error category, or null if no error",
-            "error_field": "field name containing the issue, or null if no error",
-            "error_description": "detailed explanation of what is missing or incorrect, or null if no error"
-        }}
-
-        Rules for next_steps:
-        1. Consistent and comprehensive: all required fields are correctly covered and there is no error.
-        2. Supplementary information: one or more required fields are missing.
-        3. Re-extraction: the extracted data conflicts with the user input, or required information was provided but extracted incorrectly.
-
-        Current extracted data:
-        {parse_data}
-
-        Original user input:
-        {user_input}
-
-        Output JSON only.
-    """.strip()
-    return llm.chat([
-        {"role": "user", "content": prompt.format(user_input=user_input, parse_data=str(parse_data))}
-    ]).strip()
-
-
-def requirements_parser(llm: LocalQwenLLM, user_input: str) -> str:
-    """Extract structured requirements from natural language."""
+def requirements_parser(llm: LocalQwenLLM, user_input: str, previous_data: str = "{}") -> str:
+    """Extract or update structured requirements from natural language."""
     prompt = """
         You are a survey requirement parser.
-        Extract structured survey requirement fields from the user's input.
+        Your task is to extract survey requirements from the new user input and MERGE them into the existing data.
 
         Target JSON format:
         {{
@@ -106,16 +72,49 @@ def requirements_parser(llm: LocalQwenLLM, user_input: str) -> str:
             "other": "string | null"
         }}
 
+        Previous extracted data:
+        {previous_data}
+
+        New user input:
+        {user_input}
+
         Extraction rules:
         1. Return valid JSON only.
-        2. Any field not mentioned by the user must stay null.
-        3. Never invent or guess information.
-        4. Keep values concise and precise.
-        5. If the user is answering a follow-up question from the previous turn, extract the useful content without overwriting the broader intent with casual wording.
-        User input:
-        {user_input}
+        2. MERGE the new information from 'New user input' into 'Previous extracted data'.
+        3. CRITICAL: Do NOT overwrite existing valid fields with null! If a field has a value in 'Previous extracted data' and the user doesn't mention it in 'New user input', KEEP the old value.
+        4. Any field not mentioned currently or previously must stay null.
+        5. Keep values concise and precise.
     """.strip()
-    return llm.chat([{"role": "user", "content": prompt.format(user_input=user_input)}]).strip()
+    return llm.chat([{"role": "user", "content": prompt.format(user_input=user_input, previous_data=previous_data)}]).strip()
+
+def requirements_parser_check(llm: LocalQwenLLM, parse_data: str) -> str:
+    """Check whether the parsed requirements are complete."""
+    prompt = """
+        You are a quality inspector for survey-creation requirements.
+        Validate whether the extracted requirement data `parse_data` contains all the mandatory fields.
+
+        Required fields: survey_topic, survey_object, survey_goal.
+
+        Output JSON in the following format:
+        {{
+            "next_steps": "Consistent and comprehensive" | "Supplementary information",
+            "error_type": "short error category, or null if no error",
+            "error_field": "field name containing the issue, or null if no error",
+            "error_description": "detailed explanation of what is missing, or null if no error"
+        }}
+
+        Rules for next_steps:
+        1. Consistent and comprehensive: all required fields (survey_topic, survey_object, survey_goal) are present and have valid string values (not null).
+        2. Supplementary information: one or more required fields are null or missing.
+
+        Current extracted data:
+        {parse_data}
+
+        Output JSON only.
+    """.strip()
+    return llm.chat([
+        {"role": "user", "content": prompt.format(parse_data=str(parse_data))}
+    ]).strip()
 
 
 def macro_structure_planner(llm: LocalQwenLLM, requirements: str) -> str:
