@@ -1,59 +1,41 @@
-# tool.py
 import json
-import re
 from llm import LocalQwenLLM
 from state import Step, Plan
 from pathlib import Path
 from context_store import ConversationContext
 
+
 def planer() -> Plan:
-    # 按照按块生成+局部重绘的架构，重新分配工具权限
     step1 = Step(
         title="Requirement Analysis",
         description="Analyze the user's request and extract key structured information.",
         status="pending",
-        tools=["requirement_parser", "requirement_check"]
     )
     step2 = Step(
         title="Survey Structure Planning",
         description="Plan the survey's macro structure, overall tone, and content sections.",
         status="pending",
-        tools=["macro_structure_planner", "question_distribution_planner"]
     )
     step3 = Step(
-        title="Section Generation",
-        description="Generate survey questions section by section and fix them if checker finds issues.",
+        title="Question Generation",
+        description="Generate detailed survey questions based on the approved structure.",
         status="pending",
-        tools=["generate_section_questions", "section_checker", "update_specific_question"]
     )
     step4 = Step(
-        title="Global Validation",
-        description="Check the full draft for overall consistency, logic, and size.",
+        title="Question Validation",
+        description="Check the generated questions for quality, compliance, and fit with the user requirements.",
         status="pending",
-        tools=["overall_question_checker", "update_specific_question"]
     )
     step5 = Step(
         title="Survey Output",
-        description="CRITICAL: You MUST call the `mcp_survey_executor` tool to save the final survey to a local file before finishing this step.",
+        description="Produce the final survey result based on the confirmed questions.",
         status="pending",
-        tools=["mcp_survey_executor"]
     )
-    
-    plan = Plan(
+    return Plan(
         goal="Create a complete survey based on the user's requirements.",
         thought="Understand the user's topic, audience, purpose, and other key constraints before building the survey.",
-        steps=[step1, step2, step3, step4, step5],
+        steps=[step1, step2, step3, step5],
     )
-    
-    # 动态初始化黑板（ProjectDraft）的一级 Key
-    plan.draft.data = {
-        "requirement_info": {},
-        "survey_outline": {},
-        "distribution_map": {},
-        "question_list": []
-    }
-    
-    return plan
 
 
 def generate_question(llm: LocalQwenLLM, err_message: str) -> str:
@@ -73,39 +55,45 @@ def generate_question(llm: LocalQwenLLM, err_message: str) -> str:
     return llm.chat([{"role": "user", "content": prompt.format(err_message=err_message)}]).strip()
 
 
-def requirements_parser_check(llm: LocalQwenLLM, current_requirements: str) -> str:
+def requirements_parser_check(llm: LocalQwenLLM, user_input: str, parse_data) -> str:
     """Check whether the parsed requirements are complete and accurate."""
     prompt = """
-        You are a VERY STRICT quality inspector for survey-creation requirements.
-        Validate whether all required fields are present in the current extracted data.
+        You are a quality inspector for survey-creation requirements.
+        Validate whether the extracted requirement data `parse_data` matches the user's latest input `user_input`, and check whether all required fields are present.
 
         Required fields: survey_topic, survey_object, survey_goal.
 
-        CRITICAL EVALUATION RULES:
-        1. If ANY of the required fields are `null`, empty strings `""`, or completely missing, you MUST set `next_steps` to "Supplementary information".
-        2. You can ONLY set `next_steps` to "Consistent and comprehensive" if ALL THREE required fields have clear and non-null values.
-
         Output JSON in the following format:
         {{
-            "next_steps": "Consistent and comprehensive" | "Supplementary information",
+            "next_steps": "Consistent and comprehensive" | "Supplementary information" | "Re-extraction",
             "error_type": "short error category, or null if no error",
             "error_field": "field name containing the issue, or null if no error",
-            "error_description": "detailed explanation of what is missing, or null if no error"
+            "error_description": "detailed explanation of what is missing or incorrect, or null if no error"
         }}
 
+        Rules for next_steps:
+        1. Consistent and comprehensive: all required fields are correctly covered and there is no error.
+        2. Supplementary information: one or more required fields are missing.
+        3. Re-extraction: the extracted data conflicts with the user input, or required information was provided but extracted incorrectly.
+
         Current extracted data:
-        {current_requirements}
+        {parse_data}
+
+        Original user input:
+        {user_input}
 
         Output JSON only.
     """.strip()
-    return llm.chat([{"role": "user", "content": prompt.format(current_requirements=current_requirements)}]).strip()
+    return llm.chat([
+        {"role": "user", "content": prompt.format(user_input=user_input, parse_data=str(parse_data))}
+    ]).strip()
 
 
-def requirements_parser(llm: LocalQwenLLM, plan: Plan, user_input: str, current_requirements: str) -> str:
-    """Extract structured requirements from natural language and merge."""
+def requirements_parser(llm: LocalQwenLLM, user_input: str) -> str:
+    """Extract structured requirements from natural language."""
     prompt = """
         You are a survey requirement parser.
-        Extract structured survey requirement fields from the user's latest input, and MERGE them with the Current Requirements.
+        Extract structured survey requirement fields from the user's input.
 
         Target JSON format:
         {{
@@ -120,28 +108,17 @@ def requirements_parser(llm: LocalQwenLLM, plan: Plan, user_input: str, current_
 
         Extraction rules:
         1. Return valid JSON only.
-        2. If a field in the Current Requirements has a valid value, KEEP IT, unless the new User Input explicitly modifies it.
-        3. Fill in `null` fields if the new User Input provides the missing information.
-        4. Never invent or guess information.
-
-        Current Requirements:
-        {current_requirements}
-
+        2. Any field not mentioned by the user must stay null.
+        3. Never invent or guess information.
+        4. Keep values concise and precise.
+        5. If the user is answering a follow-up question from the previous turn, extract the useful content without overwriting the broader intent with casual wording.
         User input:
         {user_input}
     """.strip()
-    response = llm.chat([{"role": "user", "content": prompt.format(current_requirements=current_requirements, user_input=user_input)}]).strip()
-    
-    try:
-        match = re.search(r"\{.*\}", response, re.DOTALL)
-        parsed = json.loads(match.group(0) if match else response)
-        plan.draft.data["requirement_info"] = parsed
-        return "Success: Requirements updated in draft.data['requirement_info']."
-    except Exception as e:
-        return f"Error parsing JSON: {e}"
+    return llm.chat([{"role": "user", "content": prompt.format(user_input=user_input)}]).strip()
 
 
-def macro_structure_planner(llm: LocalQwenLLM, plan: Plan, requirements: str) -> str:
+def macro_structure_planner(llm: LocalQwenLLM, requirements: str) -> str:
     """Plan the high-level survey structure."""
     prompt = """
         You are a professional survey structure planner. Based on the following user requirements, design the survey's macro outline and overall style.
@@ -169,7 +146,6 @@ def macro_structure_planner(llm: LocalQwenLLM, plan: Plan, requirements: str) ->
                     "theme": "second core evaluation subtopic",
                     "description": "design idea for this section"
                 }},
-                ………………………………{{section_info}}………………………………
                 {{
                     "section_id": "open_feedback",
                     "theme": "open-ended suggestions and feedback",
@@ -179,18 +155,10 @@ def macro_structure_planner(llm: LocalQwenLLM, plan: Plan, requirements: str) ->
         }}
         Output JSON only.
     """.strip()
-    response = llm.chat([{"role": "user", "content": prompt.format(requirements=requirements)}]).strip()
-    
-    try:
-        match = re.search(r"\{.*\}", response, re.DOTALL)
-        parsed = json.loads(match.group(0) if match else response)
-        plan.draft.data["survey_outline"] = parsed
-        return "Success: Macro structure planned and saved to draft.data['survey_outline']."
-    except Exception as e:
-        return f"Error parsing JSON: {e}"
+    return llm.chat([{"role": "user", "content": prompt.format(requirements=requirements)}]).strip()
 
 
-def question_distribution_planner(llm: LocalQwenLLM, plan: Plan, requirements: str, macro_structure: str) -> str:
+def question_distribution_planner(llm: LocalQwenLLM, requirements: str, macro_structure: str) -> str:
     """Allocate question counts and types across sections."""
     prompt = """
         You are an expert in survey question allocation. Based on the user's requirements and the planned outline, allocate the number of questions and question types for each section.
@@ -199,9 +167,10 @@ def question_distribution_planner(llm: LocalQwenLLM, plan: Plan, requirements: s
         Survey outline: {macro_structure}
 
         Rules:
-        1. Use questionnaire_size to choose a concrete total question count.
+        1. Use questionnaire_size to choose a concrete total question count within the allowed range.
         2. Distribute the total question count reasonably across all sections.
         3. Assign a question type for every question in every section. Allowed values: single_choice, multiple_choice, text.
+        4. Background sections are usually single_choice or text, core evaluation sections are usually single_choice or multiple_choice, and open feedback is usually text.
 
         Output JSON in the following format:
         {{
@@ -219,23 +188,18 @@ def question_distribution_planner(llm: LocalQwenLLM, plan: Plan, requirements: s
                 }}
             ]
         }}
+        All section_id values from the outline must appear, and the sum of question_count values must equal total_questions.
         Output JSON only.
     """.strip()
-    response = llm.chat([{"role": "user", "content": prompt.format(requirements=requirements, macro_structure=macro_structure)}]).strip()
-    
-    try:
-        match = re.search(r"\{.*\}", response, re.DOTALL)
-        parsed = json.loads(match.group(0) if match else response)
-        plan.draft.data["distribution_map"] = parsed
-        return "Success: Question distribution planned and saved to draft.data['distribution_map']."
-    except Exception as e:
-        return f"Error parsing JSON: {e}"
+    return llm.chat([
+        {"role": "user", "content": prompt.format(requirements=requirements, macro_structure=macro_structure)}
+    ]).strip()
 
 
-def generate_section_questions(llm: LocalQwenLLM, plan: Plan, section_id: str, requirements: str, macro_structure: str, distribution: str) -> str:
-    """Generate detailed survey questions for a single section."""
+def detailed_question_generator(llm: LocalQwenLLM, requirements: str, macro_structure: str, distribution: str) -> str:
+    """Generate detailed survey questions."""
     prompt = """
-        You are a survey question generation expert. Generate the survey questions ONLY for the section `{section_id}` according to the provided outline and distribution.
+        You are a survey question generation expert who follows instructions strictly. Generate the survey questions according to the provided outline and question distribution.
 
         Requirement data: {requirements}
         Survey outline: {macro_structure}
@@ -245,7 +209,7 @@ def generate_section_questions(llm: LocalQwenLLM, plan: Plan, section_id: str, r
         [
             {{
                 "id": 1,
-                "section_id": "{section_id}",
+                "section_id": "section_id from the distribution",
                 "type": "single_choice | multiple_choice | text",
                 "question": "question text",
                 "options": ["Option A", "Option B"]
@@ -253,77 +217,50 @@ def generate_section_questions(llm: LocalQwenLLM, plan: Plan, section_id: str, r
         ]
 
         Constraints:
-        1. The quantity and type must match the distribution exactly for `{section_id}`.
-        2. Options must be mutually exclusive and reasonable. If type is text, options must be [].
-        3. Output JSON only.
+        1. The quantity and type must match the distribution exactly.
+        2. Options must be mutually exclusive and reasonable.
+        3. If type is text, options must be [].
+        4. Output JSON only.
     """.strip()
-    response = llm.chat([{"role": "user", "content": prompt.format(
-        section_id=section_id, requirements=requirements, macro_structure=macro_structure, distribution=distribution)}]).strip()
-    
-    try:
-        match = re.search(r"\[.*\]", response, re.DOTALL)
-        new_questions = json.loads(match.group(0) if match else response)
-
-        if "question_list" not in plan.draft.data:
-            plan.draft.data["question_list"] = []
-
-        max_id = max([q.get("id", 0) for q in plan.draft.data["question_list"]]) if plan.draft.data["question_list"] else 0
-        for i, q in enumerate(new_questions, 1):
-            q["id"] = max_id + i
-
-        plan.draft.data["question_list"].extend(new_questions)
-        return f"Success: Generated {len(new_questions)} questions for section '{section_id}' and added to draft."
-    except Exception as e:
-        return f"Error parsing JSON: {e}"
+    return llm.chat([
+        {"role": "user", "content": prompt.format(requirements=requirements, macro_structure=macro_structure, distribution=distribution)}
+    ]).strip()
 
 
-def section_checker(llm: LocalQwenLLM, section_id: str, section_questions: str, prohibited_content: str) -> str:
-    """Check questions within a specific section."""
+def single_question_checker(llm: LocalQwenLLM, question_json: str, prohibited_content: str, section_topic: str) -> str:
+    """Check a single survey question."""
     prompt = """
-        You are a strict survey quality inspector. Check the following questions for section `{section_id}`.
+        You are a strict survey quality inspector. Check the following question for compliance and reasonableness.
 
-        Questions to inspect:
-        {section_questions}
+        Question to inspect:
+        {question_json}
 
         Prohibited content: {prohibited_content}
+        Section topic: {section_topic}
 
-        Evaluate:
-        1. Leading wording or bias.
+        Evaluate the following dimensions:
+        1. Leading wording.
         2. Prohibited content.
-        3. Option reasonableness (MECE).
+        3. Option reasonableness and MECE quality.
+        4. Match with the section topic.
 
         Output JSON in the following format:
         {{
             "is_valid": true | false,
-            "issues": [
-                {{"question_id": 1, "issue": "specific problem", "suggestion": "specific revision idea"}}
-            ],
-            "section_issue": "overall section feedback or null"
+            "issues": ["list specific issues here, or [] if valid"],
+            "suggestion": "specific revision suggestion, or an empty string if no revision is needed"
         }}
     """.strip()
-    return llm.chat([{"role": "user", "content": prompt.format(
-        section_id=section_id, section_questions=section_questions, prohibited_content=prohibited_content)}]).strip()
-
-
-def update_specific_question(plan: Plan, question_id: int, new_question_json: str) -> str:
-    """Modify a specific question in the draft."""
-    try:
-        new_data = json.loads(new_question_json)
-        new_data["id"] = int(question_id)
-        
-        found = False
-        for i, q in enumerate(plan.draft.data.get("question_list", [])):
-            if q.get("id") == int(question_id):
-                plan.draft.data["question_list"][i] = new_data
-                found = True
-                break
-                
-        if found:
-            return f"Success: Question {question_id} has been updated in the draft."
-        else:
-            return f"Error: Question ID {question_id} not found in current draft."
-    except Exception as e:
-        return f"Error parsing JSON: {e}"
+    return llm.chat([
+        {
+            "role": "user",
+            "content": prompt.format(
+                question_json=question_json,
+                prohibited_content=prohibited_content,
+                section_topic=section_topic,
+            ),
+        }
+    ]).strip()
 
 
 def overall_question_checker(llm: LocalQwenLLM, all_questions_json: str, expected_size: str) -> str:
@@ -335,11 +272,13 @@ def overall_question_checker(llm: LocalQwenLLM, all_questions_json: str, expecte
         {all_questions_json}
 
         Expected size: {expected_size}
+        Reference ranges: small = 5-10, medium = 11-15, large = 16-20.
 
         Evaluate the following dimensions:
         1. Whether the total number of questions matches the expected size.
-        2. Whether there are serious semantic duplicates.
-        3. Whether the overall tone is consistent.
+        2. Whether every planned section has corresponding questions.
+        3. Whether there are serious semantic duplicates.
+        4. Whether the overall tone is consistent.
 
         Output JSON in the following format:
         {{
@@ -349,25 +288,52 @@ def overall_question_checker(llm: LocalQwenLLM, all_questions_json: str, expecte
             "suggestion": "suggestions for revising or optimizing the survey"
         }}
     """.strip()
-    return llm.chat([{"role": "user", "content": prompt.format(
-        all_questions_json=all_questions_json, expected_size=expected_size)}]).strip()
+    return llm.chat([
+        {"role": "user", "content": prompt.format(all_questions_json=all_questions_json, expected_size=expected_size)}
+    ]).strip()
 
 
-def mcp_survey_executor(plan: Plan, output_file: str = "./survey_project_draft.json") -> str:
-    """Save the final global draft to a local JSON file (No params required from LLM)."""
+def mcp_survey_executor(
+    questions_data: str,
+    output_file: str = "./survey_questions.json"
+) -> str:
+    """Save generated survey questions JSON string to a local JSON file."""
     output_path = Path(output_file)
-    if not plan.draft.data:
-         return json.dumps({"status": "error", "message": "Global draft is empty."}, ensure_ascii=False)
-         
-    with output_path.open("w", encoding="utf-8") as f:
-        # dict() 适配 Pydantic, 也可以用 model_dump()
-        json.dump(plan.draft.dict() if hasattr(plan.draft, 'dict') else plan.draft.model_dump(), f, ensure_ascii=False, indent=2)
 
-    return json.dumps({
-        "status": "success",
-        "message": f"Global project draft has been successfully saved to {output_path}.",
-        "total_questions": len(plan.draft.data.get("question_list", []))
-    }, ensure_ascii=False)
+    try:
+        parsed_questions = json.loads(questions_data)
+    except json.JSONDecodeError as e:
+        return json.dumps(
+            {
+                "status": "error",
+                "message": f"questions_data is not valid JSON: {e}",
+                "output_file": str(output_path),
+            },
+            ensure_ascii=False,
+        )
+
+    if not isinstance(parsed_questions, list):
+        return json.dumps(
+            {
+                "status": "error",
+                "message": "questions_data must be a JSON list.",
+                "output_file": str(output_path),
+            },
+            ensure_ascii=False,
+        )
+
+    with output_path.open("w", encoding="utf-8") as f:
+        json.dump(parsed_questions, f, ensure_ascii=False, indent=2)
+
+    return json.dumps(
+        {
+            "status": "success",
+            "message": f"Survey questions have been saved to {output_path}.",
+            "output_file": str(output_path),
+            "question_count": len(parsed_questions),
+        },
+        ensure_ascii=False,
+    )
 
 
 def finish_step(plan: Plan, context: ConversationContext, step_title: str, result_summary: str) -> str:
