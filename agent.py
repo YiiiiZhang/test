@@ -42,7 +42,6 @@ class QAOrchestrator:
             "requirement_check": requirements_parser_check,
             "generate_question": generate_question,
             "macro_structure_planner": macro_structure_planner,
-            "question_distribution_planner": question_distribution_planner,
             "detailed_question_generator": detailed_question_generator,
             "single_question_checker": single_question_checker,
             "overall_question_checker": overall_question_checker,
