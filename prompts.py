@@ -12,16 +12,12 @@ TOOL_META = {
         "params": '{"parse_data": "the JSON string returned by requirement_parser"}'
     },
     "generate_question": {
-        "purpose": "when the user's requirements are incomplete, generate a follow-up question based on the error information.",
+        "purpose": "when the user's requirements are incomplete, generate a follow-up question based on the error information. (Warning: this tool is only for generating questions to clarify requirements, not for generating survey questions. Do not use it if the requirements are already complete.)",
         "params": '{"err_message": "description of the missing field or clarification needed"}'
     },
     "macro_structure_planner": {
-        "purpose": "plan the high-level survey outline, including sections, themes, and language style.",
+        "purpose": "plan the high-level survey outline, including sections, themes, language style, and the number of questions per section.",
         "params": '{"requirements": "the complete requirement JSON string"}'
-    },
-    "question_distribution_planner": {
-        "purpose": "assign question counts and question types to each section after the outline is ready.",
-        "params": '{"requirements": "the complete requirement JSON string", "macro_structure": "the outline returned by macro_structure_planner"}'
     },
     "detailed_question_generator": {
         "purpose": "generate detailed survey questions strictly according to the outline and question distribution.",
@@ -51,7 +47,7 @@ GLOBAL_TOOLS = ["finish_step", "generate_question"]
 TASK_TOOLS_MAP = {
     "Requirement Analysis": ["requirement_parser", "requirement_check"],
     "Survey Structure Planning": ["macro_structure_planner"],
-    "Question Generation": ["question_distribution_planner", "detailed_question_generator"],
+    "Question Generation": ["detailed_question_generator"],
     "Question Validation": ["single_question_checker", "overall_question_checker"],
     "Survey Output": ["mcp_survey_executor"]
 }

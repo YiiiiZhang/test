@@ -157,44 +157,6 @@ def macro_structure_planner(llm: LocalQwenLLM, requirements: str) -> str:
     return llm.chat([{"role": "user", "content": prompt.format(requirements=requirements)}]).strip()
 
 
-def question_distribution_planner(llm: LocalQwenLLM, requirements: str, macro_structure: str) -> str:
-    """Allocate question counts and types across sections."""
-    prompt = """
-        You are an expert in survey question allocation. Based on the user's requirements and the planned outline, allocate the number of questions and question types for each section.
-
-        Requirement data: {requirements}
-        Survey outline: {macro_structure}
-
-        Rules:
-        1. Use questionnaire_size to choose a concrete total question count within the allowed range.
-        2. Distribute the total question count reasonably across all sections.
-        3. Assign a question type for every question in every section. Allowed values: single_choice, multiple_choice, text.
-        4. Background sections are usually single_choice or text, core evaluation sections are usually single_choice or multiple_choice, and open feedback is usually text.
-
-        Output JSON in the following format:
-        {{
-            "total_questions": 10,
-            "distribution": [
-                {{
-                    "section_id": "background",
-                    "question_count": 2,
-                    "question_types": ["single_choice", "single_choice"]
-                }},
-                {{
-                    "section_id": "core_evaluation_1",
-                    "question_count": 4,
-                    "question_types": ["single_choice", "single_choice", "multiple_choice", "text"]
-                }}
-            ]
-        }}
-        All section_id values from the outline must appear, and the sum of question_count values must equal total_questions.
-        Output JSON only.
-    """.strip()
-    return llm.chat([
-        {"role": "user", "content": prompt.format(requirements=requirements, macro_structure=macro_structure)}
-    ]).strip()
-
-
 def detailed_question_generator(llm: LocalQwenLLM, requirements: str, macro_structure: str, distribution: str) -> str:
     """Generate detailed survey questions."""
     prompt = """
