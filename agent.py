@@ -2,6 +2,7 @@ import json
 import os
 import re
 import inspect
+
 from llm import LocalQwenLLM
 from context_store import ConversationContext
 from tool import (
@@ -19,16 +20,15 @@ from tool import (
 )
 from prompts import SYSTEM_PROMPT
 
-
 class QAOrchestrator:
     def __init__(self):
         config = {}
         self.max_iterations = 5
-
         with open("configs.json", "r", encoding="utf-8") as f:
             config = json.load(f)
-        llm_config = config.get("LLM", {})
 
+        llm_config = config.get("LLM", {})
+        # 这里的 max_iterations 现在代表每个 sub-task 的最大迭代次数
         self.max_iterations = config.get("max_iterations", self.max_iterations)
 
         print(f"Loading LLM from: {llm_config['model_path']} ...")
@@ -41,7 +41,7 @@ class QAOrchestrator:
             "requirement_check": requirements_parser_check,
             "generate_question": generate_question,
             "macro_structure_planner": macro_structure_planner,
-            "structure_planner": macro_structure_planner,
+            "structure_planner": macro_structure_planner,  # Alias
             "question_distribution_planner": question_distribution_planner,
             "detailed_question_generator": detailed_question_generator,
             "single_question_checker": single_question_checker,
@@ -55,7 +55,6 @@ class QAOrchestrator:
         match = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
         if not match:
             return None
-
         try:
             return json.loads(match.group(1))
         except json.JSONDecodeError:
@@ -79,10 +78,20 @@ class QAOrchestrator:
     def run(self, user_input: str) -> str:
         """Process user input and execute the agent loop."""
         self.context.add_user_message(user_input)
+        
+        # 记录当前子任务(sub-task)的迭代次数
+        step_iteration = 0
 
-        for iteration in range(self.max_iterations):
+        while True:
+            # 检查当前子任务的迭代次数是否超过限制
+            if step_iteration >= self.max_iterations:
+                return (
+                    "System busy: the agent exceeded the maximum number of thinking iterations "
+                    "for the current sub-task. Please simplify the request or restate it."
+                )
+
             messages = self._build_agent_prompt()
-            print(f"\n[Agent thinking: {iteration + 1}/{self.max_iterations}] ...")
+            print(f"\n[Agent thinking: {step_iteration + 1}/{self.max_iterations} for current sub-task] ...")
             llm_response = self.llm.chat(messages)
             self.context.add_assistant_message(llm_response)
 
@@ -100,6 +109,7 @@ class QAOrchestrator:
                 )
                 print(f"-> {error_msg}")
                 self.context.add_user_message(f"Tool feedback: {error_msg}")
+                step_iteration += 1
                 continue
 
             print(f"-> Calling tool: {tool_name}")
@@ -107,12 +117,15 @@ class QAOrchestrator:
 
             try:
                 func = self.tools_registry[tool_name]
+
+                # Dependency Injection
                 if "llm" in func.__code__.co_varnames:
                     tool_params["llm"] = self.llm
                 if "plan" in func.__code__.co_varnames:
                     tool_params["plan"] = self.plan
                 if "context" in func.__code__.co_varnames:
                     tool_params["context"] = self.context
+
                 sig = inspect.signature(func)
                 valid_params = {k: v for k, v in tool_params.items() if k in sig.parameters}
                 
@@ -125,6 +138,7 @@ class QAOrchestrator:
                 )
                 self.context.add_user_message(observation_msg)
 
+                # 任务完成或需要用户回复的情况，直接返回
                 if tool_name == "generate_question":
                     return str(tool_result)
 
@@ -135,6 +149,13 @@ class QAOrchestrator:
                 ):
                     return f"Task completed. Execution result:\n{tool_result}"
 
+                # 【核心修改点】：如果当前成功执行了 finish_step 工具，说明一个子任务完成，重置迭代计数器
+                if tool_name == "finish_step" and isinstance(tool_result, str) and "Success" in tool_result:
+                    step_iteration = 0
+                    print("-> Sub-task completed. Resetting iteration counter to 0.")
+                else:
+                    step_iteration += 1
+
             except Exception as e:
                 error_msg = (
                     f"An exception occurred while executing tool {tool_name}: {e}. "
@@ -142,8 +163,4 @@ class QAOrchestrator:
                 )
                 print(f"-> {error_msg}")
                 self.context.add_user_message(f"Tool execution feedback: {error_msg}")
-
-        return (
-            "System busy: the agent exceeded the maximum number of thinking iterations. "
-            "Please simplify the request or restate it."
-        )
+                step_iteration += 1
