@@ -18,7 +18,8 @@ from tool import (
     mcp_survey_executor,
     finish_step,
 )
-from prompts import SYSTEM_PROMPT
+# 从 prompts.py 导入核心构建函数
+from prompts import build_system_prompt
 
 class QAOrchestrator:
     def __init__(self):
@@ -28,7 +29,7 @@ class QAOrchestrator:
             config = json.load(f)
 
         llm_config = config.get("LLM", {})
-        # 这里的 max_iterations 现在代表每个 sub-task 的最大迭代次数
+        # max_iterations 限制单个 sub-task 的运行次数
         self.max_iterations = config.get("max_iterations", self.max_iterations)
 
         print(f"Loading LLM from: {llm_config['model_path']} ...")
@@ -36,12 +37,12 @@ class QAOrchestrator:
         self.context = ConversationContext()
         self.plan = planer()
 
+        # 仅注册工具的函数指针，不再负责文本定义
         self.tools_registry = {
             "requirement_parser": requirements_parser,
             "requirement_check": requirements_parser_check,
             "generate_question": generate_question,
             "macro_structure_planner": macro_structure_planner,
-            "structure_planner": macro_structure_planner,  # Alias
             "question_distribution_planner": question_distribution_planner,
             "detailed_question_generator": detailed_question_generator,
             "single_question_checker": single_question_checker,
@@ -61,16 +62,8 @@ class QAOrchestrator:
             return None
 
     def _build_agent_prompt(self) -> list[dict[str, str]]:
-        """Build the message list passed to the LLM."""
-        plan_lines = ["[Current Task Plan]"]
-        for idx, step in enumerate(self.plan.steps, start=1):
-            plan_lines.append(
-                f"Step {idx}. {step.title} | status={step.status} | description={step.description}"
-            )
-            if step.result:
-                plan_lines.append(f"Step {idx} result summary: {step.result}")
-
-        system_content = SYSTEM_PROMPT + "\n\n" + "\n".join(plan_lines)
+        """调用 prompts.py 中的生成器动态构建 System Prompt"""
+        system_content = build_system_prompt(self.plan)
         messages = [{"role": "system", "content": system_content}]
         messages.extend(self.context.to_message_dicts())
         return messages
@@ -118,7 +111,7 @@ class QAOrchestrator:
             try:
                 func = self.tools_registry[tool_name]
 
-                # Dependency Injection
+                # 依赖注入
                 if "llm" in func.__code__.co_varnames:
                     tool_params["llm"] = self.llm
                 if "plan" in func.__code__.co_varnames:
@@ -138,7 +131,6 @@ class QAOrchestrator:
                 )
                 self.context.add_user_message(observation_msg)
 
-                # 任务完成或需要用户回复的情况，直接返回
                 if tool_name == "generate_question":
                     return str(tool_result)
 
@@ -149,10 +141,10 @@ class QAOrchestrator:
                 ):
                     return f"Task completed. Execution result:\n{tool_result}"
 
-                # 【核心修改点】：如果当前成功执行了 finish_step 工具，说明一个子任务完成，重置迭代计数器
+                # 成功调用 finish_step，重置子任务迭代计数器
                 if tool_name == "finish_step" and isinstance(tool_result, str) and "Success" in tool_result:
                     step_iteration = 0
-                    print("-> Sub-task completed. Resetting iteration counter to 0.")
+                    print("-> Sub-task completed. Added to Information Base. Resetting iteration counter to 0.")
                 else:
                     step_iteration += 1
 
