@@ -347,7 +347,7 @@ def mcp_survey_executor(
 
     # 1. 验证并解析 JSON 数据 (完全保持原样)
     try:
-        parsed_questions = json.loads(questions_data)
+        formatted_data = json.loads(json.dumps(questions_data))
     except json.JSONDecodeError as e:
         return json.dumps(
             {
