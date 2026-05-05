@@ -105,6 +105,6 @@
   },
   {
     "role": "user",
-    "content": "Tool mcp_survey_executor finished. Returned result:\n{\"status\": \"success\", \"message\": \"Survey questions have been saved to survey_questions.json.\", \"output_file\": \"survey_questions.json\", \"question_count\": 13}\nDecide the next step based on this result, or reply to the user directly."
+    "content": "Tool mcp_survey_executor finished. Returned result:\n{\"status\": \"success\", \"message\": \"Survey questions have been saved to survey_questions.json, but Google Form creation failed: Service account info was not in the expected format, missing fields client_email, token_uri.\", \"output_file\": \"survey_questions.json\", \"question_count\": 13}\nDecide the next step based on this result, or reply to the user directly."
   }
 ]
