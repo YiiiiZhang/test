@@ -13,13 +13,12 @@ class Message:
 @dataclass
 class ConversationContext:
     messages: List[Message] = field(default_factory=list)
-    # 新增：用于记录全局所有对话，不受 context.clear() 影响
+    # save all of conversation history for logging, not just the recent context used for LLM input
     full_messages: List[Message] = field(default_factory=list)
-    # 日志保存路径
     log_file: str = "conversation_log.json"
 
     def _save_log(self) -> None:
-        """将全量历史覆盖保存到本地 JSON 文件中"""
+        # Save the full conversation history to a JSON file after each update, for debugging and analysis
         try:
             with open(self.log_file, "w", encoding="utf-8") as f:
                 json.dump(
@@ -50,9 +49,9 @@ class ConversationContext:
         return [message.to_dict() for message in self.messages]
         
     def clear(self) -> None:
-        """清空短期上下文（但不清空全量日志）"""
+        """Clear the current context messages but keep the full conversation history for logging."""
         self.messages.clear()
-        # 在日志中插入一条标记，方便你检查时知道这里发生了阶段性截断
+        # Add a marker message to indicate context was cleared for the next sub-task, for better log readability *\
         marker_msg = Message(role="system", content="[Context temporarily cleared by agent for next sub-task]")
         self.full_messages.append(marker_msg)
         self._save_log()

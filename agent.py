@@ -33,7 +33,7 @@ class QAOrchestrator:
 
         print(f"Loading LLM from: {llm_config['model_path']} ...")
         self.llm = LocalQwenLLM(**llm_config)
-        self.context = ConversationContext()
+        self.context = ConversationContext(log_file = config.get("logs_file", "conversation_logs.json"))
         self.plan = planer()
 
         # 仅注册工具的函数指针，不再负责文本定义
@@ -60,7 +60,7 @@ class QAOrchestrator:
             return None
 
     def _build_agent_prompt(self) -> list[dict[str, str]]:
-        """调用 prompts.py 中的生成器动态构建 System Prompt"""
+        """build the prompt for the agent, including system instructions and conversation context."""
         system_content = build_system_prompt(self.plan)
         messages = [{"role": "system", "content": system_content}]
         messages.extend(self.context.to_message_dicts())
@@ -70,11 +70,11 @@ class QAOrchestrator:
         """Process user input and execute the agent loop."""
         self.context.add_user_message(user_input)
         
-        # 记录当前子任务(sub-task)的迭代次数
+        # recoder for the number of iterations the agent has gone through for the current sub-task, to prevent infinite loops and provide better user feedback
         step_iteration = 0
 
         while True:
-            # 检查当前子任务的迭代次数是否超过限制
+            # check if the agent has exceeded the maximum thinking iterations for the current sub-task, to prevent infinite loops and provide better user feedback
             if step_iteration >= self.max_iterations:
                 return (
                     "System busy: the agent exceeded the maximum number of thinking iterations "
@@ -109,7 +109,6 @@ class QAOrchestrator:
             try:
                 func = self.tools_registry[tool_name]
 
-                # 依赖注入
                 if "llm" in func.__code__.co_varnames:
                     tool_params["llm"] = self.llm
                 if "plan" in func.__code__.co_varnames:

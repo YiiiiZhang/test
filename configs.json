@@ -7,6 +7,8 @@
         "device_map" : "auto"
     },
     "max_iterations":10,
+    "logs_file":"./logs/conversation_logs.json",
     "GOOGLE_APPLICATION_CREDENTIALS":"../analytical-park-463211-h9-730b156cf365.json",
     "survey_questions_output_file":"./survey_questions.json"
+    
 }
