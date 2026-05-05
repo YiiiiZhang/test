@@ -253,12 +253,13 @@ def overall_question_checker(llm: LocalQwenLLM, all_questions_json: str, expecte
         {"role": "user", "content": prompt.format(all_questions_json=all_questions_json, expected_size=expected_size)}
     ]).strip()
 
-
+"""
 def mcp_survey_executor(
     questions_data: str,
     output_file: str = "./survey_questions.json"
 ) -> str:
-    """Save generated survey questions JSON string to a local JSON file."""
+    """#Save generated survey questions JSON string to a local JSON file.
+"""
     output_path = Path(output_file)
 
     try:
@@ -295,9 +296,7 @@ def mcp_survey_executor(
         },
         ensure_ascii=False,
     )
-
-
-# tool.py (修改 finish_step 函数)
+"""
 
 def finish_step(plan: Plan, context: ConversationContext, step_title: str, result_summary: str) -> str:
     """Mark a plan step as completed and trim redundant context."""
@@ -327,3 +326,131 @@ def finish_step(plan: Plan, context: ConversationContext, step_title: str, resul
     # 3. 容错提示：如果找不到，把合法的 step_title 列表抛给 LLM 帮助其纠正
     valid_titles = [s.title for s in plan.steps]
     return f"Error: no step named '{step_title}' was found in the plan. Available valid step titles are: {valid_titles}"
+
+################################################################################
+###############    connect to  Google Forms API    #############################
+################################################################################
+import json
+import os
+from pathlib import Path
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+
+def mcp_survey_executor(
+    questions_data: str,
+) -> str:
+    """Save generated survey questions JSON string to a local JSON file and publish as a Google Form."""
+    configs = json.load(open('./configs.json', 'r'))
+    output_file = configs.get("survey_questions_output_file", "./survey_questions.json")
+    output_path = Path(output_file)
+
+    # 1. 验证并解析 JSON 数据 (完全保持原样)
+    try:
+        parsed_questions = json.loads(questions_data)
+    except json.JSONDecodeError as e:
+        return json.dumps(
+            {
+                "status": "error",
+                "message": f"questions_data is not valid JSON: {e}",
+                "output_file": str(output_path),
+            },
+            ensure_ascii=False,
+        )
+
+    if not isinstance(parsed_questions, list):
+        return json.dumps(
+            {
+                "status": "error",
+                "message": "questions_data must be a JSON list.",
+                "output_file": str(output_path),
+            },
+            ensure_ascii=False,
+        )
+
+    # 2. 保存本地 JSON 文件 (完全保持原样)
+    with output_path.open("w", encoding="utf-8") as f:
+        json.dump(parsed_questions, f, ensure_ascii=False, indent=2)
+
+    # 3. Google Forms API 创建表单逻辑
+    form_publish_url = ""
+    try:
+        credentials_path = configs.get("GOOGLE_APPLICATION_CREDENTIALS", "./credentials.json")
+        SCOPES = ["https://www.googleapis.com/auth/forms.body"]
+        
+        creds = service_account.Credentials.from_service_account_file(
+            credentials_path, scopes=SCOPES
+        )
+        form_service = build("forms", "v1", credentials=creds)
+
+        # 创建初始表单
+        initial_form = {
+            "info": {
+                "title": "食堂就餐体验调查问卷",
+                "documentTitle": "Auto-generated Survey Form"
+            }
+        }
+        created_form = form_service.forms().create(body=initial_form).execute()
+        form_id = created_form.get("formId")
+        form_publish_url = created_form.get("responderUri")
+
+        # 构建批量写入请求
+        requests = []
+        for index, q_data in enumerate(parsed_questions):
+            q_type = q_data.get("type")
+            title = q_data.get("question")
+            options = q_data.get("options", [])
+            
+            item = {"title": title}
+            
+            if q_type in ["single_choice", "multiple_choice"]:
+                api_choice_type = "RADIO" if q_type == "single_choice" else "CHECKBOX"
+                item["questionItem"] = {
+                    "question": {
+                        "required": True,
+                        "choiceQuestion": {
+                            "type": api_choice_type,
+                            "options": [{"value": opt} for opt in options]
+                        }
+                    }
+                }
+            elif q_type == "text":
+                item["questionItem"] = {
+                    "question": {
+                        "required": False,
+                        "textQuestion": {
+                            "paragraph": True
+                        }
+                    }
+                }
+                
+            requests.append({
+                "createItem": {
+                    "item": item,
+                    "location": {"index": index}
+                }
+            })
+
+        # 写入题目
+        if requests:
+            form_service.forms().batchUpdate(
+                formId=form_id,
+                body={"requests": requests}
+            ).execute()
+            
+        final_message = f"Survey questions have been saved to {output_path}. Google Form created: {form_publish_url}"
+
+    except Exception as e:
+        # 兼容处理：如果 API 失败，依然返回成功保存本地文件的信息，并在 message 中报告 API 错误
+        final_message = f"Survey questions have been saved to {output_path}, but Google Form creation failed: {e}"
+
+    # 4. 返回结果 (严格参照原版输出格式)
+    return json.dumps(
+        {
+            "status": "success",
+            "message": final_message,
+            "output_file": str(output_path),
+            "question_count": len(parsed_questions),
+        },
+        ensure_ascii=False,
+    )
