@@ -8,7 +8,11 @@
     },
     "max_iterations":10,
     "logs_file":"./logs/conversation_logs.json",
-    "GOOGLE_APPLICATION_CREDENTIALS":"../analytical-park-463211-h9-730b156cf365.json",
-    "survey_questions_output_file":"./survey_questions.json"
+    "GOOGLE_KEYS":{
+        "SCOPES" : ["https://www.googleapis.com/auth/forms.body"],
+        "GOOGLE_APPLICATION_CREDENTIALS":"../KEYS/analytical-park-463211-h9-730b156cf365.json",
+        "Token_json":"../KEYS/token.json"
+    },
+    "survey_questions_output_file":"./results/final_survey.json"
     
 }
