@@ -5,7 +5,7 @@ import inspect
 
 from llm import LocalQwenLLM
 from context_store import ConversationContext
-from tool import (
+from tools.tool import (
     planer,
     requirements_parser,
     requirements_parser_check,
@@ -14,9 +14,9 @@ from tool import (
     detailed_question_generator,
     single_question_checker,
     overall_question_checker,
-    mcp_survey_executor,
     finish_step,
 )
+from tools.google_forms import survey_executor_google
 # 从 prompts.py 导入核心构建函数
 from prompts import build_system_prompt
 
@@ -45,7 +45,7 @@ class QAOrchestrator:
             "detailed_question_generator": detailed_question_generator,
             "single_question_checker": single_question_checker,
             "overall_question_checker": overall_question_checker,
-            "mcp_survey_executor": mcp_survey_executor,
+            "survey_executor_google": survey_executor_google,
             "finish_step": finish_step,
         }
 
@@ -132,7 +132,7 @@ class QAOrchestrator:
                     return str(tool_result)
 
                 if (
-                    tool_name == "mcp_survey_executor"
+                    tool_name == "survey_executor_google"
                     and isinstance(tool_result, str)
                     and "success" in tool_result.lower()
                 ):

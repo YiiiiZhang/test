@@ -31,8 +31,8 @@ TOOL_META = {
         "purpose": "check the full survey for count, repetition, and overall bias.",
         "params": '{"all_questions_json": "the JSON list string of all questions", "expected_size": "expected survey size such as small or medium"}'
     },
-    "mcp_survey_executor": {
-        "purpose": "Save generated survey questions JSON string to a local JSON file after generate all of questions.",
+    "survey_executor_google": {
+        "purpose": "Save generated survey questions JSON string push to a Google Form after generate all of questions.",
         "params": '{"questions_data": "the final JSON string of all questions"}'
     },
     "finish_step": {
@@ -49,7 +49,7 @@ TASK_TOOLS_MAP = {
     "Survey Structure Planning": ["macro_structure_planner"],
     "Question Generation": ["detailed_question_generator"],
     "Question Validation": ["single_question_checker", "overall_question_checker"],
-    "Survey Output": ["mcp_survey_executor"]
+    "Survey Output": ["survey_executor_google"]
 }
 
 BASE_PROMPT = """You are a professional survey generation assistant (QA Agent). A set of tools is available to help you complete the task. Based on the user's input and the current plan, use these tools step by step in a reasonable way.

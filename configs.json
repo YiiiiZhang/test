@@ -7,12 +7,16 @@
         "device_map" : "auto"
     },
     "max_iterations":10,
-    "logs_file":"./logs/conversation_logs.json",
     "GOOGLE_KEYS":{
-        "SCOPES" : ["https://www.googleapis.com/auth/forms.body"],
-        "GOOGLE_APPLICATION_CREDENTIALS":"../KEYS/analytical-park-463211-h9-730b156cf365.json",
+        "SCOPES" : ["https://www.googleapis.com/auth/forms.body","https://www.googleapis.com/auth/drive"],
+        "GOOGLE_APPLICATION_CREDENTIALS":"../KEYS/client_qa.googleusercontent.com.json",
         "Token_json":"../KEYS/token.json"
     },
-    "survey_questions_output_file":"./results/final_survey.json"
+    "save_survey":{
+        "save_to_local": true,
+        "save_to_google_forms": true,
+        "output_path": "./results/final_survey.json"
+    },
+    "logs_file":"./logs/conversation_logs.json"
     
 }

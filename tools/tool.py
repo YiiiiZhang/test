@@ -169,8 +169,9 @@ def detailed_question_generator(llm: LocalQwenLLM, requirements: str, macro_stru
         Output a JSON list in the following format:
         [
             {{
-                "title": "Survey Title",
-                "description": "Survey introduction and instructions for respondents"
+                "id": 0,
+                "survey_title": "Survey Title",
+                "survey_description": "Survey introduction and instructions for respondents"
             }},
             {{
                 "id": 1,
@@ -257,51 +258,6 @@ def overall_question_checker(llm: LocalQwenLLM, all_questions_json: str, expecte
         {"role": "user", "content": prompt.format(all_questions_json=all_questions_json, expected_size=expected_size)}
     ]).strip()
 
-
-def mcp_survey_executor(
-    questions_data: str,
-    output_file: str = "./survey_questions.json"
-) -> str:
-    """#Save generated survey questions JSON string to a local JSON file.
-"""
-    output_path = Path(output_file)
-
-    try:
-        parsed_questions = json.loads(questions_data)
-    except json.JSONDecodeError as e:
-        return json.dumps(
-            {
-                "status": "error",
-                "message": f"questions_data is not valid JSON: {e}",
-                "output_file": str(output_path),
-            },
-            ensure_ascii=False,
-        )
-
-    if not isinstance(parsed_questions, list):
-        return json.dumps(
-            {
-                "status": "error",
-                "message": "questions_data must be a JSON list.",
-                "output_file": str(output_path),
-            },
-            ensure_ascii=False,
-        )
-
-    with output_path.open("w", encoding="utf-8") as f:
-        json.dump(parsed_questions, f, ensure_ascii=False, indent=2)
-
-    return json.dumps(
-        {
-            "status": "success",
-            "message": f"Survey questions have been saved to {output_path}.",
-            "output_file": str(output_path),
-            "question_count": len(parsed_questions),
-        },
-        ensure_ascii=False,
-    )
-
-
 def finish_step(plan: Plan, context: ConversationContext, step_title: str, result_summary: str) -> str:
     """Mark a plan step as completed and trim redundant context."""
     
@@ -331,12 +287,3 @@ def finish_step(plan: Plan, context: ConversationContext, step_title: str, resul
     valid_titles = [s.title for s in plan.steps]
     return f"Error: no step named '{step_title}' was found in the plan. Available valid step titles are: {valid_titles}"
 
-################################################################################
-###############    connect to  Google Forms API    #############################
-################################################################################
-import json
-import os
-from pathlib import Path
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
