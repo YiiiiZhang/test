@@ -1,56 +1,90 @@
+"""
+agent.py
+─────────────────────────────────────────────
+QAOrchestrator — 新版 Agent 主控制器
+
+设计原则：
+  - 每个步骤维护一个可变的核心状态（AgentState）
+  - 工具 = 对核心状态的 CRUD + 导航
+  - ask_user 可在任意步骤暂停循环，用户回复后在同一步骤继续
+  - confirm_step 确认步骤完成后才进入下一步
+  - goto_step 支持随时回退到任意步骤修改
+"""
+
 import json
-import os
 import re
 import inspect
+from typing import Optional
 
 from llm import LocalQwenLLM
 from context_store import ConversationContext
-from tools.tool import (
-    planer,
-    requirements_parser,
-    requirements_parser_check,
-    generate_question,
-    macro_structure_planner,
-    detailed_question_generator,
-    single_question_checker,
-    overall_question_checker,
-    finish_step,
-)
-from tools.google_forms import survey_executor_google
-# 从 prompts.py 导入核心构建函数
-from prompts import build_system_prompt
+from state.models import AgentState
+from tools.base import ToolResult, ResultType
+from tools import navigation, requirement, structure, question, output_tools
+from prompts.builder import build_system_prompt
+
 
 class QAOrchestrator:
     def __init__(self):
-        config = {}
-        self.max_iterations = 5
         with open("configs.json", "r", encoding="utf-8") as f:
-            config = json.load(f)
+            self.configs = json.load(f)
 
-        llm_config = config.get("LLM", {})
-        # max_iterations 限制单个 sub-task 的运行次数
-        self.max_iterations = config.get("max_iterations", self.max_iterations)
+        llm_config = self.configs.get("LLM", {})
+        self.max_iterations = self.configs.get("max_iterations", 15)
 
         print(f"Loading LLM from: {llm_config['model_path']} ...")
-        self.llm = LocalQwenLLM(**llm_config)
-        self.context = ConversationContext(log_file = config.get("logs_file", "conversation_logs.json"))
-        self.plan = planer()
+        self.llm     = LocalQwenLLM(**llm_config)
+        self.state   = AgentState()
+        self.context = ConversationContext(
+            log_file=self.configs.get("logs_file", "conversation_logs.json")
+        )
+        self._build_registry()
 
-        # 仅注册工具的函数指针，不再负责文本定义
-        self.tools_registry = {
-            "requirement_parser": requirements_parser,
-            "requirement_check": requirements_parser_check,
-            "generate_question": generate_question,
-            "macro_structure_planner": macro_structure_planner,
-            "detailed_question_generator": detailed_question_generator,
-            "single_question_checker": single_question_checker,
-            "overall_question_checker": overall_question_checker,
-            "survey_executor_google": survey_executor_google,
-            "finish_step": finish_step,
+    # ─────────────────────────────────────────────────────────────────────────
+    # 工具注册
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _build_registry(self) -> None:
+        self.tools_registry: dict[str, callable] = {
+            # ── 全局工具（任意步骤均可调用） ──────────────────────────────────
+            "ask_user":     navigation.ask_user,
+            "confirm_step": navigation.confirm_step,
+            "goto_step":    navigation.goto_step,
+
+            # ── Step 1: 需求分析 ───────────────────────────────────────────
+            "parse_requirements":    requirement.parse_requirements,
+            "set_requirement_field": requirement.set_requirement_field,
+            "get_requirements":      requirement.get_requirements,
+
+            # ── Step 2: 结构规划 ───────────────────────────────────────────
+            "generate_structure": structure.generate_structure,
+            "add_section":        structure.add_section,
+            "update_section":     structure.update_section,
+            "delete_section":     structure.delete_section,
+            "set_style":          structure.set_style,
+            "set_introduction":   structure.set_introduction,
+            "get_structure":      structure.get_structure,
+
+            # ── Step 3: 题目生成 ───────────────────────────────────────────
+            "generate_all_questions":     question.generate_all_questions,
+            "generate_section_questions": question.generate_section_questions,
+            "add_question":               question.add_question,
+            "update_question":            question.update_question,
+            "delete_question":            question.delete_question,
+            "set_survey_meta":            question.set_survey_meta,
+            "get_questions":              question.get_questions,
+            "validate_questions":         question.validate_questions,
+
+            # ── Step 4: 输出 ────────────────────────────────────────────────
+            "execute_output": output_tools.execute_output,
         }
 
-    def _parse_tool_call(self, text: str) -> dict | None:
-        """Parse a JSON tool-call block from the LLM output."""
+    # ─────────────────────────────────────────────────────────────────────────
+    # 工具调用
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _parse_tool_call(self, text: str) -> Optional[dict]:
+        """从 LLM 输出中提取 ```json``` 代码块。"""
         match = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
         if not match:
             return None
@@ -59,97 +93,128 @@ class QAOrchestrator:
         except json.JSONDecodeError:
             return None
 
-    def _build_agent_prompt(self) -> list[dict[str, str]]:
-        """build the prompt for the agent, including system instructions and conversation context."""
-        system_content = build_system_prompt(self.plan)
+    def _inject_and_call(self, tool_name: str, tool_params: dict) -> ToolResult:
+        """
+        根据函数签名自动注入运行时依赖（llm / state / configs），
+        其余参数由 LLM 通过 tool_params 提供。
+        """
+        func = self.tools_registry[tool_name]
+        sig  = inspect.signature(func)
+
+        final_params: dict = {}
+        for param_name in sig.parameters:
+            if param_name == "llm":
+                final_params["llm"] = self.llm
+            elif param_name == "state":
+                final_params["state"] = self.state
+            elif param_name == "configs":
+                final_params["configs"] = self.configs
+
+        # LLM 提供的参数（只接受函数签名中存在的 key）
+        for k, v in tool_params.items():
+            if k in sig.parameters:
+                final_params[k] = v
+
+        return func(**final_params)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Prompt 构建
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _build_prompt(self) -> list[dict]:
+        system_content = build_system_prompt(self.state)
         messages = [{"role": "system", "content": system_content}]
         messages.extend(self.context.to_message_dicts())
         return messages
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # 主循环
+    # ─────────────────────────────────────────────────────────────────────────
+
     def run(self, user_input: str) -> str:
-        """Process user input and execute the agent loop."""
+        """
+        处理一轮用户输入，驱动 Agent 循环直到：
+          - LLM 返回纯文本（无工具调用）→ 直接回复用户
+          - 工具返回 ASK_USER → 把问题发给用户，本轮结束
+          - 工具返回 TASK_DONE → 任务全部完成
+          - 达到最大迭代次数 → 超时提示
+
+        步骤状态在 AgentState 中持久保存，下一次 run() 从断点继续。
+        """
         self.context.add_user_message(user_input)
-        
-        # recoder for the number of iterations the agent has gone through for the current sub-task, to prevent infinite loops and provide better user feedback
-        step_iteration = 0
+        iteration = 0
 
-        while True:
-            # check if the agent has exceeded the maximum thinking iterations for the current sub-task, to prevent infinite loops and provide better user feedback
-            if step_iteration >= self.max_iterations:
-                return (
-                    "System busy: the agent exceeded the maximum number of thinking iterations "
-                    "for the current sub-task. Please simplify the request or restate it."
-                )
+        while iteration < self.max_iterations:
+            messages = self._build_prompt()
+            step_tag = self.state.current_step
+            print(f"\n[Agent iter={iteration + 1}/{self.max_iterations} | step={step_tag}]")
 
-            messages = self._build_agent_prompt()
-            print(f"\n[Agent thinking: {step_iteration + 1}/{self.max_iterations} for current sub-task] ...")
             llm_response = self.llm.chat(messages)
             self.context.add_assistant_message(llm_response)
 
+            # ── 没有工具调用 → LLM 直接回复用户 ──────────────────────────────
             tool_call = self._parse_tool_call(llm_response)
-            if not tool_call:
+            if tool_call is None:
                 return llm_response
 
-            tool_name = tool_call.get("name")
+            tool_name   = tool_call.get("name", "")
             tool_params = tool_call.get("params", {})
 
+            # ── 工具名不存在 ────────────────────────────────────────────────
             if tool_name not in self.tools_registry:
-                error_msg = (
-                    f"System error: tool '{tool_name}' was not found. "
-                    "Please check the available tool list and call again."
+                err = (
+                    f"Tool '{tool_name}' does not exist. "
+                    "Check the [Available Tools] list in the system prompt."
                 )
-                print(f"-> {error_msg}")
-                self.context.add_user_message(f"Tool feedback: {error_msg}")
-                step_iteration += 1
+                print(f"  ✗ {err}")
+                self.context.add_user_message(f"[System] {err}")
+                iteration += 1
                 continue
 
-            print(f"-> Calling tool: {tool_name}")
-            print(f"-> Parameters: {json.dumps(tool_params, ensure_ascii=False)}")
+            print(f"  → {tool_name}({json.dumps(tool_params, ensure_ascii=False)})")
 
+            # ── 执行工具 ────────────────────────────────────────────────────
             try:
-                func = self.tools_registry[tool_name]
-
-                if "llm" in func.__code__.co_varnames:
-                    tool_params["llm"] = self.llm
-                if "plan" in func.__code__.co_varnames:
-                    tool_params["plan"] = self.plan
-                if "context" in func.__code__.co_varnames:
-                    tool_params["context"] = self.context
-
-                sig = inspect.signature(func)
-                valid_params = {k: v for k, v in tool_params.items() if k in sig.parameters}
-                
-                tool_result = func(**valid_params)
-                print(f"-> Tool result: {tool_result}")
-
-                observation_msg = (
-                    f"Tool {tool_name} finished. Returned result:\n{tool_result}\n"
-                    "Decide the next step based on this result, or reply to the user directly."
-                )
-                self.context.add_user_message(observation_msg)
-
-                if tool_name == "generate_question":
-                    return str(tool_result)
-
-                if (
-                    tool_name == "survey_executor_google"
-                    and isinstance(tool_result, str)
-                    and "success" in tool_result.lower()
-                ):
-                    return f"Task completed. Execution result:\n{tool_result}"
-
-                # 成功调用 finish_step，重置子任务迭代计数器
-                if tool_name == "finish_step" and isinstance(tool_result, str) and "Success" in tool_result:
-                    step_iteration = 0
-                    print("-> Sub-task completed. Added to Information Base. Resetting iteration counter to 0.")
-                else:
-                    step_iteration += 1
-
+                result: ToolResult = self._inject_and_call(tool_name, tool_params)
             except Exception as e:
-                error_msg = (
-                    f"An exception occurred while executing tool {tool_name}: {e}. "
-                    "Please verify whether the provided parameters satisfy the tool requirements."
+                err = f"Tool '{tool_name}' raised an exception: {e}"
+                print(f"  ✗ {err}")
+                self.context.add_user_message(f"[Tool error] {err}")
+                iteration += 1
+                continue
+
+            content_preview = result.content[:120].replace("\n", " ")
+            print(f"  ← [{result.type}] {content_preview}...")
+
+            # ── 处理返回类型 ─────────────────────────────────────────────────
+
+            if result.type == ResultType.ASK_USER:
+                # 把问题/草稿返回给用户，本轮结束
+                # 下一轮 run() 将继续在当前步骤工作
+                return result.content
+
+            if result.type == ResultType.TASK_DONE:
+                # 全部完成
+                return result.content
+
+            if result.type in (ResultType.STEP_DONE, ResultType.GOTO_STEP):
+                # 步骤发生变化：裁剪短期上下文，写入步骤切换通知
+                self.context.clear()
+                self.context.add_user_message(
+                    f"[System] {result.content}\n"
+                    f"Current step: [{self.state.current_step}]"
                 )
-                print(f"-> {error_msg}")
-                self.context.add_user_message(f"Tool execution feedback: {error_msg}")
-                step_iteration += 1
+                # 不增加 iteration，步骤切换视为有意义的推进
+                continue
+
+            # OBSERVATION：把工具结果作为 observation 加入上下文，继续循环
+            self.context.add_user_message(
+                f"[Tool: {tool_name}]\n{result.content}\n\n"
+                "Review the result above and decide the next action."
+            )
+            iteration += 1
+
+        return (
+            "System: The agent exceeded the maximum number of iterations for this turn. "
+            "Please simplify your request or continue with a new message."
+        )

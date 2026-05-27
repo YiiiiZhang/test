@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p \"e:/project/test/state\" \"e:/project/test/prompts\")",
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import sys; [print\\(l, end=''\\) for l in sys.stdin]\")"
+    ],
+    "additionalDirectories": [
+      "e:\\project\\test"
+    ]
+  }
+}

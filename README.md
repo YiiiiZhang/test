@@ -1,375 +1,296 @@
 # QA Agent
 
-A local LLM-based questionnaire generation agent that turns a user's natural-language requirements into a structured survey through a staged tool-driven workflow.
+A local LLM-powered interactive survey-creation assistant.  
+QA Agent guides users through a structured, multi-step conversation to produce a finished questionnaire — and can publish it directly to Google Forms.
 
-## Overview
+---
 
-QA Agent is designed as an orchestration layer around a local Qwen model. Instead of generating a survey in one step, the system breaks the task into multiple stages:
+## Architecture
 
-1. Requirement analysis
-2. Questionnaire structure planning
-3. Question generation
-4. Question validation
-5. Survey creation/output
+The agent is built around a **CRUD state model**: every pipeline step owns a mutable core-content object. The LLM interacts with that object via fine-grained Create / Read / Update / Delete tools rather than regenerating everything at once. This lets the user and the agent iterate freely within each step before moving on.
 
-The core runtime is an agent loop that lets the LLM decide which tool to call next, executes that tool in Python, and feeds the result back into the LLM until the task is finished or the iteration limit is reached.
-
-
-## Current Status
-
-This project currently works as a **local prototype**.
-
-- The agent loop is implemented.
-- The tool-based planning flow is implemented.
-- The final survey executor is currently a **temporary placeholder**.
-- Instead of creating a real survey through an API, `mcp_survey_executor` currently prints the final questionnaire payload and returns a success-style result.
-
-## Main Workflow
-
-The end-to-end workflow is:
-
-```text
-User input
-  -> CLI entry (`cli.py`)
-  -> QAOrchestrator initialization (`agent.py`)
-  -> Load config and local LLM
-  -> Build system prompt + plan state + conversation history
-  -> LLM decides whether to call a tool
-  -> Parse tool call JSON
-  -> Execute Python tool
-  -> Feed tool result back into conversation context
-  -> Continue until:
-       - the agent asks the user a follow-up question, or
-       - the final survey result is produced, or
-       - max iterations are exceeded
+```
+User input ──► QAOrchestrator.run()
+                │
+                ├─ Build system prompt (step state + available tools)
+                ├─ Call local LLM
+                ├─ Parse tool call JSON from response
+                │
+                ├─ Tool: CRUD on core state  ──► OBSERVATION → loop
+                ├─ Tool: ask_user            ──► pause, return question to user
+                ├─ Tool: confirm_step        ──► advance to next step, clear context
+                ├─ Tool: goto_step           ──► jump to any step (backward revision)
+                └─ Tool: execute_output      ──► TASK_DONE → return result
 ```
 
-### Detailed Stage Flow
+Key design decisions:
 
-#### 1. Requirement Analysis
+| Decision | Detail |
+|---|---|
+| **Per-step core state** | `RequirementState`, `StructureState`, `QuestionsState`, `OutputState` — each is a Pydantic model persisted across turns |
+| **ask_user pauses the loop** | Returning `ResultType.ASK_USER` ends the current `run()` call; the next call resumes at the exact same step |
+| **confirm_step is the only gate** | The step never advances unless the LLM explicitly calls `confirm_step`, preventing accidental progression |
+| **goto_step enables revision** | Any step can be revisited at any time; completed steps are re-opened automatically |
+| **Context trimmed at transitions** | `ConversationContext.clear()` fires only on step change (not every tool call), keeping the prompt focused |
+| **Runtime injection** | Tools declare `llm`, `state`, `configs` as parameters; the orchestrator injects them automatically via `inspect.signature()` |
 
-The system first extracts structured survey requirements from the user's natural-language input.
+---
 
-Typical fields include:
+## Pipeline Steps
 
-- survey topic
-- survey object
-- survey goal
-- questionnaire size
-- whether background information is needed
-- prohibited content
-- other custom requirements
+### Step 1 — Requirement Analysis (`requirement_analysis`)
 
-Then the extracted result is checked for completeness and consistency.
+Collect and confirm the survey requirements through natural-language conversation.
 
-If required information is missing, the agent generates a follow-up question for the user.
+**Core state:** `RequirementState`
 
-#### 2. Questionnaire Structure Planning
+| Field | Required | Description |
+|---|---|---|
+| `survey_topic` | ✓ | What the survey is about |
+| `survey_object` | ✓ | Target respondents |
+| `survey_goal` | ✓ | Purpose of the survey |
+| `questionnaire_size` | — | Target number of questions |
+| `need_background_info` | — | Whether to include a background section |
+| `prohibited_content` | — | Topics / wording to avoid |
+| `other` | — | Any additional constraints |
 
-Once the requirements are complete, the agent creates a macro-level survey structure, including:
+**Tools:** `parse_requirements` · `set_requirement_field` · `get_requirements`
 
-- language style
-- introduction wording
-- section breakdown
-- section themes
-- section descriptions
+---
 
-#### 3. Question Distribution Planning
+### Step 2 — Structure Planning (`structure_planning`)
 
-The system assigns:
+Design the survey's sections, language style, introduction, and question distribution.
 
-- total question count
-- question count per section
-- question type per question
+**Core state:** `StructureState`
 
-Supported question types are:
+| Field | Description |
+|---|---|
+| `style` | Language tone (e.g. "formal academic", "friendly casual") |
+| `introduction` | Opening message shown to respondents |
+| `sections` | List of `SectionItem` objects, each with `section_id`, `theme`, `description`, `question_count`, `question_types` |
 
-- `single_choice`
-- `multiple_choice`
-- `text`
+**Tools:** `generate_structure` · `add_section` · `update_section` · `delete_section` · `set_style` · `set_introduction` · `get_structure`
 
-#### 4. Detailed Question Generation
+---
 
-Based on the approved structure and distribution, the agent generates the full questionnaire in JSON format.
+### Step 3 — Question Generation (`question_generation`)
 
-Each question contains:
+Generate, review, and iteratively refine all survey questions together with the user.
 
-- question id
-- section id
-- question type
-- question text
-- options
+**Core state:** `QuestionsState`
 
-#### 5. Validation
+Each `QuestionItem` contains:
+- `id` — auto-assigned integer
+- `section_id` — links back to a `StructureState` section
+- `type` — `single_choice` | `multiple_choice` | `text`
+- `question` — question text
+- `options` — list of answer choices (empty for `text` type)
 
-Validation happens at two levels:
+**Tools:** `generate_all_questions` · `generate_section_questions` · `add_question` · `update_question` · `delete_question` · `set_survey_meta` · `get_questions` · `validate_questions`
 
-- **Single-question validation**
-  - leading or biased wording
-  - prohibited content
-  - option quality and mutual exclusiveness
-  - section-topic alignment
+---
 
-- **Overall questionnaire validation**
-  - total question count
-  - section coverage
-  - repetition
-  - tone consistency
+### Step 4 — Output (`output`)
 
-#### 6. Final Output
+Save the final questionnaire locally and/or publish it to Google Forms.
 
-After validation succeeds, the final questionnaire data is passed to `mcp_survey_executor`.
+**Core state:** `OutputState` — records `form_url`, `local_path`, `status`
 
-At the moment, this function only:
+**Tool:** `execute_output`
 
-- prints the final questionnaire JSON
-- returns a mock success-style result
+---
+
+### Global Navigation Tools (available at every step)
+
+| Tool | Purpose |
+|---|---|
+| `ask_user` | Send a question or draft to the user and pause the loop |
+| `confirm_step` | Mark the current step as done and advance to the next |
+| `goto_step` | Jump to any step by name (supports backward revision) |
+
+---
 
 ## Project Structure
 
-```text
+```
 .
-├── agent.py           # Core orchestrator and agent loop
-├── cli.py             # Command-line entry point
-├── configs.json       # Runtime configuration
-├── context_store.py   # Conversation memory container
-├── llm.py             # Local Qwen model wrapper
-├── prompts.py         # System prompt for agent tool use
-├── state.py           # Plan / step data structures
-├── tool.py            # All business tools used by the agent
-└── README.md          # Project documentation
+├── agent.py              # QAOrchestrator — main controller and agent loop
+├── cli.py                # Terminal entry point
+├── llm.py                # Local Qwen model wrapper
+├── context_store.py      # Conversation memory (add / export / clear)
+├── configs.json          # Runtime configuration
+│
+├── state/
+│   ├── __init__.py
+│   └── models.py         # AgentState + per-step state models (Pydantic v2)
+│
+├── tools/
+│   ├── __init__.py
+│   ├── base.py           # ToolResult dataclass + ResultType constants
+│   ├── navigation.py     # ask_user / confirm_step / goto_step
+│   ├── requirement.py    # Step 1 CRUD tools
+│   ├── structure.py      # Step 2 CRUD tools
+│   ├── question.py       # Step 3 CRUD tools
+│   ├── output_tools.py   # Step 4 execution
+│   └── google_forms.py   # Google Forms API client
+│
+├── prompts/
+│   ├── __init__.py
+│   └── builder.py        # Dynamic system-prompt builder
+│
+├── results/              # Local survey output (JSON)
+└── logs/                 # Conversation logs (JSON)
 ```
 
-## Module Description
+---
 
-### `cli.py`
-
-Provides a simple terminal interface.
-
-Responsibilities:
-
-- initialize the agent
-- accept user input
-- exit on `exit` or `quit`
-- print the final agent response
-
-### `agent.py`
-
-Contains `QAOrchestrator`, which is the core controller.
-
-Responsibilities:
-
-- load configuration
-- initialize the local LLM
-- initialize conversation context
-- initialize the plan
-- register available tools
-- build prompt messages
-- parse tool call JSON
-- run the tool-calling loop
-
-### `context_store.py`
-
-Defines the conversation-memory abstraction used by the orchestrator.
-
-Responsibilities:
-
-- store user messages
-- store assistant messages
-- export messages into chat format
-- clear temporary context when needed
-
-### `llm.py`
-
-Wraps the local Qwen model.
-
-Responsibilities:
-
-- load tokenizer
-- load model
-- apply chat template
-- run generation
-- decode the final response
-
-### `state.py`
-
-Defines the planning data structure.
-
-Core objects:
-
-- `Step`
-- `Plan`
-
-Each step stores:
-
-- title
-- description
-- status
-- result
-
-### `prompts.py`
-
-Stores the global system prompt.
-
-The prompt defines:
-
-- the agent role
-- tool call format
-- tool descriptions
-- workflow rules
-- step completion behavior
-
-### `tool.py`
-
-Contains all business tools used by the agent.
-
-Main tools:
-
-- `planer`
-- `requirements_parser`
-- `requirements_parser_check`
-- `generate_question`
-- `macro_structure_planner`
-- `question_distribution_planner`
-- `detailed_question_generator`
-- `single_question_checker`
-- `overall_question_checker`
-- `mcp_survey_executor`
-- `finish_step`
-
-## Requirements
-
-Recommended environment:
-
-- Python 3.10+
-- PyTorch
-- Transformers
-- A local Qwen-compatible model path
-
-## Installation
-
-### 1. Clone or copy the project
-
-Place all project files in the same working directory.
-
-### 2. Install dependencies
-
-Example:
-
-```bash
-pip install torch transformers pydantic
-```
-
-Install any additional dependencies required by your local environment.
-
-### 3. Configure the model path
-
-Edit `configs.json`:
+## Configuration (`configs.json`)
 
 ```json
 {
-  "LLM": {
-    "model_path": "/path/to/your/local/model",
-    "temperature": 0.1,
-    "max_tokens": 2048,
-    "down_sample": false,
-    "device_map": "auto"
-  },
-  "max_iterations": 5
+    "LLM": {
+        "model_path": "/path/to/local/model",
+        "temperature": 0.1,
+        "max_tokens": 2048,
+        "down_sample": false,
+        "device_map": "auto"
+    },
+    "max_iterations": 10,
+    "GOOGLE_KEYS": {
+        "SCOPES": [
+            "https://www.googleapis.com/auth/forms.body",
+            "https://www.googleapis.com/auth/drive"
+        ],
+        "GOOGLE_APPLICATION_CREDENTIALS": "../KEYS/client_qa.googleusercontent.com.json",
+        "Token_json": "../KEYS/token.json"
+    },
+    "save_survey": {
+        "save_to_local": true,
+        "save_to_google_forms": true,
+        "output_path": "./results/final_survey.json"
+    },
+    "logs_file": "./logs/conversation_logs.json"
 }
 ```
 
-Make sure `model_path` points to a valid local model directory.
+| Key | Description |
+|---|---|
+| `LLM.model_path` | Absolute path to a local Qwen-compatible model |
+| `LLM.temperature` | Sampling temperature (lower = more deterministic) |
+| `LLM.max_tokens` | Maximum tokens per LLM response |
+| `max_iterations` | Maximum agent-loop iterations per user turn |
+| `GOOGLE_KEYS` | OAuth credentials for Google Forms / Drive |
+| `save_survey.save_to_local` | Whether to save the final JSON locally |
+| `save_survey.save_to_google_forms` | Whether to publish to Google Forms |
+| `save_survey.output_path` | Local save path |
+
+---
+
+## Installation
+
+```bash
+# 1. Install Python dependencies
+pip install torch transformers pydantic google-auth google-auth-oauthlib google-api-python-client
+
+# 2. Set model path in configs.json
+
+# 3. Place Google OAuth credentials under ../KEYS/
+#    (GOOGLE_APPLICATION_CREDENTIALS and Token_json paths)
+```
+
+---
 
 ## Usage
-
-Run:
 
 ```bash
 python cli.py
 ```
 
-Example input:
+Example opening message:
 
-```text
-I want to create a questionnaire for university students about satisfaction with an online learning platform, with around 10 questions.
+```
+I want to create a 10-question satisfaction survey for university students about an online learning platform.
 ```
 
-The system will then:
+The agent will:
+1. Extract requirements and ask follow-up questions until all required fields are confirmed
+2. Draft a survey structure and discuss it with you
+3. Generate all questions section by section and refine them on request
+4. Save the final questionnaire to a local JSON file and/or push it to Google Forms
 
-- analyze the requirement
-- ask follow-up questions if needed
-- plan the structure
-- generate and validate questions
-- print the final survey payload
+---
 
 ## Tool Call Protocol
 
-The agent uses a strict JSON tool call format.
-
-Example:
+The LLM communicates tool calls via a single `json` code block:
 
 ```json
 {
-  "name": "requirements_parser",
-  "params": {
-    "user_input": "I want a survey for university students about online learning satisfaction."
-  }
+    "name": "tool_name",
+    "params": {
+        "param_name": "param_value"
+    }
 }
 ```
 
-The orchestrator parses this JSON block and dispatches execution to the corresponding Python function.
+Any LLM response without a `json` block is treated as a direct reply to the user.
 
-## Step Persistence and Context Trimming
+---
 
-The project includes a step finalization mechanism through `finish_step`.
+## Module Reference
 
-Purpose:
+### `agent.py` — `QAOrchestrator`
 
-- mark a plan step as completed
-- save the step result into the plan
-- clear redundant short-term context
-- keep later reasoning focused
+- Loads config, LLM, `AgentState`, `ConversationContext`
+- Registers all tools in a flat `dict[str, callable]`
+- Injects `llm` / `state` / `configs` into tool calls via `inspect.signature()`
+- Routes `ToolResult` types: `OBSERVATION` → loop, `ASK_USER` → return to user, `STEP_DONE` / `GOTO_STEP` → clear context and continue, `TASK_DONE` → return final result
 
-This is useful for long multi-turn tasks where prompt length could otherwise keep growing.
+### `state/models.py`
 
-## Known Limitations
+Core Pydantic models:
+- `RequirementState` — required fields + `is_complete()` / `missing_fields()`
+- `StructureState` + `SectionItem`
+- `QuestionsState` + `QuestionItem`
+- `OutputState`
+- `AgentState` — global container with `goto()`, `confirm_current_step()`, `is_all_done()`
 
-### 1. Final survey creation is still mocked
+### `tools/base.py`
 
-`mcp_survey_executor` is currently a temporary placeholder.
+```python
+class ResultType:
+    OBSERVATION = "observation"   # tool result fed back into the loop
+    ASK_USER    = "ask_user"      # pause loop, return message to user
+    STEP_DONE   = "step_done"     # step advanced to next
+    GOTO_STEP   = "goto_step"     # jumped to a specific step
+    TASK_DONE   = "task_done"     # entire pipeline complete
 
-It does not:
+@dataclass
+class ToolResult:
+    type: str
+    content: str
+    target_step: Optional[str] = None
+```
 
-- create a real survey link
-- call an external API
-- persist the survey remotely
+### `prompts/builder.py`
 
-### 2. Output quality depends heavily on the local model
+Builds the system prompt dynamically on every LLM call:
+1. Base role + tool-call format spec
+2. Visual task plan (○ pending / → in-progress / ► current / ✓ done)
+3. Current step's live state content
+4. Available tools (global + step-specific), with purpose and parameter schema
+5. Workflow guide
 
-Because parsing, planning, validation, and question generation all rely on the LLM, output quality depends on:
+### `context_store.py`
 
-- model capability
-- prompt alignment
-- generation settings
-- local hardware/runtime stability
+Lightweight conversation memory:
+- `add_user_message()` / `add_assistant_message()` — append to history
+- `to_message_dicts()` — export as `[{"role": ..., "content": ...}]`
+- `clear()` — reset short-term context on step transitions
 
-### 3. Validation is still model-driven
+### `llm.py`
 
-Even though the project separates validation into single-question and overall validation, the checks are still primarily LLM-based rather than rule-engine based.
-
-### 4. No web/API integration yet
-
-The current version is fully local and does not include:
-
-- real survey platforms
-- database storage
-- user authentication
-- frontend UI
-
-## Next Steps
-
-1. Replace `mcp_survey_executor` with a real survey platform API integration.
-2. Add unit tests for tool functions and orchestration paths.
-
-
+Wraps a local Qwen model loaded via Transformers:
+- `LocalQwenLLM(model_path, temperature, max_tokens, ...)`
+- `chat(messages: list[dict]) -> str` — applies the chat template and returns decoded output
