@@ -18,7 +18,7 @@ def apply_global_form_format(form_service, form_id, questions_data):
                 "updateFormInfo": {
                     "info": {
                         "title": questions_data.get("survey_title", "Untitled Survey"),
-                        "description": questions_data.get("survey_description", "请填写以下问卷，感谢您的参与！"),
+                        "description": questions_data.get("survey_description", "Please complete this survey. Thank you for your participation!"),
                     },
                     "updateMask": "title,description" # <-- UPDATE THE MASK
                 }

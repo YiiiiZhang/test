@@ -1,14 +1,15 @@
 """
 prompts/builder.py
 ─────────────────────────────────────────────
-动态构建系统提示词。
+Dynamic system prompt builder.
 
-每次调用 build_system_prompt(state) 时，Prompt 包含：
-  1. Agent 角色说明 + 工具调用格式规范
-  2. 当前任务计划（可视化步骤状态）
-  3. 当前步骤的核心内容（让 LLM 看到已有数据）
-  4. 当前步骤可用工具（全局 + 步骤专属）
-  5. 工作流指引
+build_system_prompt(state) is called before every LLM invocation.
+The resulting prompt contains:
+  1. Agent role description + tool-call format specification
+  2. Current task plan (visual step status)
+  3. Live core content for the current step
+  4. Available tools (global + step-specific)
+  5. Workflow guide
 """
 
 from state.models import (
@@ -19,7 +20,7 @@ from state.models import (
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 工具元数据定义
+# Tool metadata definitions
 # ─────────────────────────────────────────────────────────────────────────────
 
 GLOBAL_TOOL_META = {
@@ -180,7 +181,7 @@ STEP_TOOL_META = {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Prompt 固定部分
+# Fixed prompt sections
 # ─────────────────────────────────────────────────────────────────────────────
 
 BASE_PROMPT = """\
@@ -212,24 +213,24 @@ WORKFLOW_GUIDE = """\
 1. Start each user turn by reviewing [Current Step Content] to understand the current state.
 2. Use step-specific tools to build / modify the core content.
 3. Use ask_user to show drafts to the user, request feedback, or ask clarifying questions.
-   → The loop pauses and the user's next reply resumes the SAME step with the SAME state.
+   -> The loop pauses and the user's next reply resumes the SAME step with the SAME state.
 4. Iterate with the user until the step's content is fully agreed upon.
 5. Call confirm_step only after explicit user approval — this advances to the next step.
 6. If user feedback requires revising an earlier step, call goto_step to go back.\
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 状态渲染函数
+# State rendering helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-_STATUS_ICON = {PENDING: "○", IN_PROGRESS: "→", COMPLETED: "✓"}
+_STATUS_ICON = {PENDING: "o", IN_PROGRESS: "->", COMPLETED: "v"}
 
 
 def _render_plan(state: AgentState) -> str:
     lines = ["[Task Plan]"]
     for step in STEP_ORDER:
         raw_status = state.step_statuses.get(step, PENDING)
-        icon = "►" if step == state.current_step else _STATUS_ICON.get(raw_status, "○")
+        icon = ">" if step == state.current_step else _STATUS_ICON.get(raw_status, "o")
         goal = STEP_GOALS.get(step, "")
         lines.append(f"  {icon} [{step}]  ({raw_status})")
         if step == state.current_step:
@@ -246,9 +247,9 @@ def _render_current_state(state: AgentState) -> str:
         lines.append(req.model_dump_json(indent=2))
         missing = req.missing_fields()
         if missing:
-            lines.append(f"⚠ Required fields still missing: {missing}")
+            lines.append(f"Required fields still missing: {missing}")
         else:
-            lines.append("✓ All required fields are filled.")
+            lines.append("All required fields are filled.")
 
     elif step == STEP_STRUCTURE:
         s = state.structure
@@ -261,7 +262,7 @@ def _render_current_state(state: AgentState) -> str:
                 f"count={sec.question_count}  types={sec.question_types}"
             )
             if sec.description:
-                lines.append(f"    → {sec.description}")
+                lines.append(f"    -> {sec.description}")
 
     elif step == STEP_QUESTION:
         qs = state.questions
@@ -308,7 +309,7 @@ def _render_tools(state: AgentState) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 主入口
+# Main entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
 def build_system_prompt(state: AgentState) -> str:

@@ -1,14 +1,16 @@
 """
 agent.py
 ─────────────────────────────────────────────
-QAOrchestrator — 新版 Agent 主控制器
+QAOrchestrator — main agent controller
 
-设计原则：
-  - 每个步骤维护一个可变的核心状态（AgentState）
-  - 工具 = 对核心状态的 CRUD + 导航
-  - ask_user 可在任意步骤暂停循环，用户回复后在同一步骤继续
-  - confirm_step 确认步骤完成后才进入下一步
-  - goto_step 支持随时回退到任意步骤修改
+Design principles:
+  - Each step maintains a mutable core state (AgentState)
+  - Tools = CRUD operations on core state + navigation
+  - ask_user can pause the loop at any step; the next run() call resumes
+    at the same step with the same state
+  - confirm_step gates step advancement — the step never advances unless
+    the LLM explicitly confirms it with the user
+  - goto_step supports backward navigation to any step for revision
 """
 
 import json
@@ -41,22 +43,22 @@ class QAOrchestrator:
         self._build_registry()
 
     # ─────────────────────────────────────────────────────────────────────────
-    # 工具注册
+    # Tool registration
     # ─────────────────────────────────────────────────────────────────────────
 
     def _build_registry(self) -> None:
         self.tools_registry: dict[str, callable] = {
-            # ── 全局工具（任意步骤均可调用） ──────────────────────────────────
+            # ── Global tools (available at every step) ────────────────────────
             "ask_user":     navigation.ask_user,
             "confirm_step": navigation.confirm_step,
             "goto_step":    navigation.goto_step,
 
-            # ── Step 1: 需求分析 ───────────────────────────────────────────
+            # ── Step 1: requirement analysis ──────────────────────────────────
             "parse_requirements":    requirement.parse_requirements,
             "set_requirement_field": requirement.set_requirement_field,
             "get_requirements":      requirement.get_requirements,
 
-            # ── Step 2: 结构规划 ───────────────────────────────────────────
+            # ── Step 2: structure planning ────────────────────────────────────
             "generate_structure": structure.generate_structure,
             "add_section":        structure.add_section,
             "update_section":     structure.update_section,
@@ -65,7 +67,7 @@ class QAOrchestrator:
             "set_introduction":   structure.set_introduction,
             "get_structure":      structure.get_structure,
 
-            # ── Step 3: 题目生成 ───────────────────────────────────────────
+            # ── Step 3: question generation ───────────────────────────────────
             "generate_all_questions":     question.generate_all_questions,
             "generate_section_questions": question.generate_section_questions,
             "add_question":               question.add_question,
@@ -75,16 +77,16 @@ class QAOrchestrator:
             "get_questions":              question.get_questions,
             "validate_questions":         question.validate_questions,
 
-            # ── Step 4: 输出 ────────────────────────────────────────────────
+            # ── Step 4: output ────────────────────────────────────────────────
             "execute_output": output_tools.execute_output,
         }
 
     # ─────────────────────────────────────────────────────────────────────────
-    # 工具调用
+    # Tool dispatch
     # ─────────────────────────────────────────────────────────────────────────
 
     def _parse_tool_call(self, text: str) -> Optional[dict]:
-        """从 LLM 输出中提取 ```json``` 代码块。"""
+        """Extract a ```json``` block from the LLM response, if present."""
         match = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
         if not match:
             return None
@@ -95,8 +97,9 @@ class QAOrchestrator:
 
     def _inject_and_call(self, tool_name: str, tool_params: dict) -> ToolResult:
         """
-        根据函数签名自动注入运行时依赖（llm / state / configs），
-        其余参数由 LLM 通过 tool_params 提供。
+        Auto-inject runtime dependencies (llm / state / configs) based on the
+        function's parameter names, then call the tool with the LLM-supplied
+        params for any remaining parameters.
         """
         func = self.tools_registry[tool_name]
         sig  = inspect.signature(func)
@@ -110,7 +113,7 @@ class QAOrchestrator:
             elif param_name == "configs":
                 final_params["configs"] = self.configs
 
-        # LLM 提供的参数（只接受函数签名中存在的 key）
+        # Accept LLM-provided params only for keys present in the signature
         for k, v in tool_params.items():
             if k in sig.parameters:
                 final_params[k] = v
@@ -118,7 +121,7 @@ class QAOrchestrator:
         return func(**final_params)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Prompt 构建
+    # Prompt construction
     # ─────────────────────────────────────────────────────────────────────────
 
     def _build_prompt(self) -> list[dict]:
@@ -128,18 +131,19 @@ class QAOrchestrator:
         return messages
 
     # ─────────────────────────────────────────────────────────────────────────
-    # 主循环
+    # Main loop
     # ─────────────────────────────────────────────────────────────────────────
 
     def run(self, user_input: str) -> str:
         """
-        处理一轮用户输入，驱动 Agent 循环直到：
-          - LLM 返回纯文本（无工具调用）→ 直接回复用户
-          - 工具返回 ASK_USER → 把问题发给用户，本轮结束
-          - 工具返回 TASK_DONE → 任务全部完成
-          - 达到最大迭代次数 → 超时提示
+        Process one round of user input, driving the agent loop until:
+          - The LLM returns plain text (no tool call) -> reply directly to user
+          - A tool returns ASK_USER -> send the question to the user, end this turn
+          - A tool returns TASK_DONE -> the entire pipeline is complete
+          - The iteration limit is reached -> timeout message
 
-        步骤状态在 AgentState 中持久保存，下一次 run() 从断点继续。
+        Step state is persisted in AgentState; the next run() call resumes
+        from the exact same position.
         """
         self.context.add_user_message(user_input)
         iteration = 0
@@ -152,7 +156,7 @@ class QAOrchestrator:
             llm_response = self.llm.chat(messages)
             self.context.add_assistant_message(llm_response)
 
-            # ── 没有工具调用 → LLM 直接回复用户 ──────────────────────────────
+            # ── No tool call -> LLM replies directly to the user ──────────────
             tool_call = self._parse_tool_call(llm_response)
             if tool_call is None:
                 return llm_response
@@ -160,54 +164,53 @@ class QAOrchestrator:
             tool_name   = tool_call.get("name", "")
             tool_params = tool_call.get("params", {})
 
-            # ── 工具名不存在 ────────────────────────────────────────────────
+            # ── Unknown tool name ─────────────────────────────────────────────
             if tool_name not in self.tools_registry:
                 err = (
                     f"Tool '{tool_name}' does not exist. "
                     "Check the [Available Tools] list in the system prompt."
                 )
-                print(f"  ✗ {err}")
+                print(f"  x {err}")
                 self.context.add_user_message(f"[System] {err}")
                 iteration += 1
                 continue
 
-            print(f"  → {tool_name}({json.dumps(tool_params, ensure_ascii=False)})")
+            print(f"  -> {tool_name}({json.dumps(tool_params, ensure_ascii=False)})")
 
-            # ── 执行工具 ────────────────────────────────────────────────────
+            # ── Execute the tool ──────────────────────────────────────────────
             try:
                 result: ToolResult = self._inject_and_call(tool_name, tool_params)
             except Exception as e:
                 err = f"Tool '{tool_name}' raised an exception: {e}"
-                print(f"  ✗ {err}")
+                print(f"  x {err}")
                 self.context.add_user_message(f"[Tool error] {err}")
                 iteration += 1
                 continue
 
             content_preview = result.content[:120].replace("\n", " ")
-            print(f"  ← [{result.type}] {content_preview}...")
+            print(f"  <- [{result.type}] {content_preview}...")
 
-            # ── 处理返回类型 ─────────────────────────────────────────────────
+            # ── Route by result type ──────────────────────────────────────────
 
             if result.type == ResultType.ASK_USER:
-                # 把问题/草稿返回给用户，本轮结束
-                # 下一轮 run() 将继续在当前步骤工作
+                # Return the question to the user and end this turn.
+                # The next run() call will continue at the current step.
                 return result.content
 
             if result.type == ResultType.TASK_DONE:
-                # 全部完成
                 return result.content
 
             if result.type in (ResultType.STEP_DONE, ResultType.GOTO_STEP):
-                # 步骤发生变化：裁剪短期上下文，写入步骤切换通知
+                # Step changed: trim short-term context and record the transition.
+                # Do not increment iteration — a step transition counts as progress.
                 self.context.clear()
                 self.context.add_user_message(
                     f"[System] {result.content}\n"
                     f"Current step: [{self.state.current_step}]"
                 )
-                # 不增加 iteration，步骤切换视为有意义的推进
                 continue
 
-            # OBSERVATION：把工具结果作为 observation 加入上下文，继续循环
+            # OBSERVATION: feed the tool result back as context and loop again
             self.context.add_user_message(
                 f"[Tool: {tool_name}]\n{result.content}\n\n"
                 "Review the result above and decide the next action."

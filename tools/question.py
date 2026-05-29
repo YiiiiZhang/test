@@ -1,16 +1,16 @@
 """
 tools/question.py
 ─────────────────────────────────────────────
-Step 3 工具：对 QuestionsState 的增删查改
+Step 3 tools: CRUD operations on QuestionsState
 
-  generate_all_questions      — LLM 一键生成全部题目草稿
-  generate_section_questions  — 对单个 section 重新生成/补充题目
-  add_question                — 手动新增一道题
-  update_question             — 修改某道题的某字段
-  delete_question             — 删除某道题
-  set_survey_meta             — 设置问卷标题 / 描述
-  get_questions               — 读取当前所有题目
-  validate_questions          — LLM 对全套题目做质量检查
+  generate_all_questions      — LLM generates all questions in one call
+  generate_section_questions  — regenerate / replace questions for one section
+  add_question                — manually add a single question
+  update_question             — modify one field of an existing question
+  delete_question             — remove a question by ID
+  set_survey_meta             — set the survey title and description
+  get_questions               — read all current questions
+  validate_questions          — LLM quality check on the full question set
 """
 
 import json
@@ -19,7 +19,7 @@ from state.models import AgentState, QuestionItem
 from tools.base import ToolResult, ResultType
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Prompt 模板
+# Prompt templates
 # ─────────────────────────────────────────────────────────────────────────────
 
 _GEN_ALL_PROMPT = """
@@ -110,13 +110,14 @@ Output JSON only.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 工具函数
+# Tool functions
 # ─────────────────────────────────────────────────────────────────────────────
 
 def generate_all_questions(llm: LocalQwenLLM, state: AgentState) -> ToolResult:
     """
-    LLM 根据已确认的结构一次性生成全部题目草稿。
-    生成后用户可通过 add/update/delete_question 逐题调整。
+    Use the LLM to generate a complete draft of all questions at once,
+    strictly following the confirmed structure. After generation, the user
+    can refine questions individually with add/update/delete_question.
     """
     req    = state.requirements.model_dump_json(indent=2)
     struct = state.structure.model_dump_json(indent=2)
@@ -150,11 +151,11 @@ def generate_all_questions(llm: LocalQwenLLM, state: AgentState) -> ToolResult:
             try:
                 new_questions.append(QuestionItem(**item))
             except Exception:
-                pass  # 跳过格式不合法的条目
+                pass  # Skip malformed entries
 
     state.questions.questions = new_questions
 
-    # 生成摘要
+    # Build summary grouped by section
     section_counts: dict[str, int] = {}
     for q in new_questions:
         section_counts[q.section_id] = section_counts.get(q.section_id, 0) + 1
@@ -172,8 +173,8 @@ def generate_section_questions(
     count: int,
 ) -> ToolResult:
     """
-    重新生成（或补充）某个 section 的题目。
-    先清空该 section 已有题目，再生成新题目。
+    Regenerate all questions for one specific section, replacing any existing
+    questions in that section. Use when a section needs a complete redo.
     """
     section = state.structure.get_section(section_id)
     if not section:
@@ -214,7 +215,7 @@ def generate_section_questions(
             content=f"Generation failed: {e}\nRaw:\n{raw}",
         )
 
-    # 清除该 section 旧题目，重新填入
+    # Remove existing questions for this section, then insert new ones
     state.questions.questions = [
         q for q in state.questions.questions if q.section_id != section_id
     ]
@@ -243,7 +244,7 @@ def add_question(
     question: str,
     options: list = None,
 ) -> ToolResult:
-    """手动新增一道题（CREATE）。"""
+    """Manually add one new question to a section (CREATE)."""
     if section_id not in state.structure.section_ids():
         return ToolResult(
             type=ResultType.OBSERVATION,
@@ -280,7 +281,7 @@ def update_question(
     field: str,
     value,
 ) -> ToolResult:
-    """修改某道题的一个字段（UPDATE）。"""
+    """Modify one field of an existing question (UPDATE)."""
     q = state.questions.get_question(question_id)
     if not q:
         all_ids = [x.id for x in state.questions.questions]
@@ -298,12 +299,12 @@ def update_question(
     setattr(q, field, value)
     return ToolResult(
         type=ResultType.OBSERVATION,
-        content=f"Q{question_id}.{field}: {old_val!r} → {value!r}",
+        content=f"Q{question_id}.{field}: {old_val!r} -> {value!r}",
     )
 
 
 def delete_question(state: AgentState, question_id: int) -> ToolResult:
-    """删除某道题（DELETE）。"""
+    """Remove a question by its numeric ID (DELETE)."""
     before = len(state.questions.questions)
     state.questions.questions = [
         q for q in state.questions.questions if q.id != question_id
@@ -324,7 +325,7 @@ def delete_question(state: AgentState, question_id: int) -> ToolResult:
 
 def set_survey_meta(state: AgentState, survey_title: str = None,
                     survey_description: str = None) -> ToolResult:
-    """设置问卷标题和介绍文字。"""
+    """Set or update the survey title and/or description."""
     updated = []
     if survey_title is not None:
         state.questions.survey_title = survey_title
@@ -344,7 +345,7 @@ def set_survey_meta(state: AgentState, survey_title: str = None,
 
 
 def get_questions(state: AgentState) -> ToolResult:
-    """读取当前所有题目（READ 操作）。"""
+    """Read and display all current questions grouped by section (READ operation)."""
     qs = state.questions
     lines = [
         f"Title: {qs.survey_title or '(not set)'}",
@@ -352,7 +353,7 @@ def get_questions(state: AgentState) -> ToolResult:
         f"Total questions: {len(qs.questions)}",
         "",
     ]
-    # 按 section 分组展示
+    # Group by section for display
     section_map: dict[str, list[QuestionItem]] = {}
     for q in qs.questions:
         section_map.setdefault(q.section_id, []).append(q)
@@ -367,7 +368,11 @@ def get_questions(state: AgentState) -> ToolResult:
 
 
 def validate_questions(llm: LocalQwenLLM, state: AgentState) -> ToolResult:
-    """LLM 对全部题目做质量检查（领导性措辞、禁止内容、选项质量、整体一致性）。"""
+    """
+    Run a comprehensive LLM-based quality check on all questions
+    (bias, prohibited content, MECE options, section alignment,
+    duplicates, tone consistency).
+    """
     req        = state.requirements.model_dump_json(indent=2)
     qs_json    = json.dumps([q.model_dump() for q in state.questions.questions],
                             ensure_ascii=False, indent=2)
@@ -389,10 +394,10 @@ def validate_questions(llm: LocalQwenLLM, state: AgentState) -> ToolResult:
 
     try:
         result = json.loads(raw)
-        is_valid  = result.get("is_valid", False)
-        issues    = result.get("issues", [])
+        is_valid    = result.get("is_valid", False)
+        issues      = result.get("issues", [])
         suggestions = result.get("suggestions", "")
-        status    = "✓ PASSED" if is_valid else "✗ FAILED"
+        status      = "PASSED" if is_valid else "FAILED"
         lines = [f"Validation {status}"]
         if issues:
             lines.append("Issues found:")

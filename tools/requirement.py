@@ -1,11 +1,11 @@
 """
 tools/requirement.py
 ─────────────────────────────────────────────
-Step 1 工具：对 RequirementState 的增删查改
+Step 1 tools: CRUD operations on RequirementState
 
-  parse_requirements    — LLM 解析用户输入并合并到状态
-  set_requirement_field — 直接写入单个字段
-  get_requirements      — 读取当前状态（展示给 LLM 决策用）
+  parse_requirements    — LLM parses user input and merges fields into state
+  set_requirement_field — directly write a single field
+  get_requirements      — read the current state (for LLM decision-making)
 """
 
 import json
@@ -43,14 +43,15 @@ Rules:
 
 def parse_requirements(llm: LocalQwenLLM, state: AgentState, user_input: str) -> ToolResult:
     """
-    LLM 从用户输入中提取需求字段，并合并进当前 RequirementState。
-    支持多轮累积：已有字段不被覆盖。
+    Use the LLM to extract requirement fields from user input and merge them
+    into the current RequirementState. Supports multi-turn accumulation:
+    existing non-null fields are never overwritten.
     """
     existing = state.requirements.model_dump_json(indent=2)
     prompt = _PARSE_PROMPT.format(existing=existing, user_input=user_input)
     raw = llm.chat([{"role": "user", "content": prompt}]).strip()
 
-    # 去除可能存在的 markdown 代码围栏
+    # Strip any markdown code fences the LLM may have added
     if "```" in raw:
         parts = raw.split("```")
         for part in parts:
@@ -63,10 +64,10 @@ def parse_requirements(llm: LocalQwenLLM, state: AgentState, user_input: str) ->
 
     try:
         data = json.loads(raw)
-        # 只更新合法字段，忽略 LLM 可能输出的多余 key
+        # Only accept known fields; ignore any extra keys the LLM may output
         valid_fields = set(RequirementState.model_fields.keys())
         update = {k: v for k, v in data.items() if k in valid_fields}
-        # 合并：非 None 的新值才更新，保持已有非空值
+        # Merge: only apply non-None new values, preserving existing non-null values
         current = state.requirements.model_dump()
         for k, v in update.items():
             if v is not None:
@@ -75,9 +76,9 @@ def parse_requirements(llm: LocalQwenLLM, state: AgentState, user_input: str) ->
 
         missing = state.requirements.missing_fields()
         status = (
-            f"✓ Requirements complete. All required fields filled."
+            "Requirements complete. All required fields filled."
             if not missing
-            else f"⚠ Still missing: {missing}"
+            else f"Still missing: {missing}"
         )
         return ToolResult(
             type=ResultType.OBSERVATION,
@@ -96,8 +97,9 @@ def parse_requirements(llm: LocalQwenLLM, state: AgentState, user_input: str) ->
 
 def set_requirement_field(state: AgentState, field: str, value) -> ToolResult:
     """
-    直接设置需求的某个字段（精确修改，无需 LLM）。
-    适合用于用户明确指出某个字段有误时。
+    Directly set a single requirement field to the given value.
+    Use this for precise single-field corrections when the user explicitly
+    points out that one field is wrong.
     """
     valid = list(RequirementState.model_fields.keys())
     if field not in valid:
@@ -107,7 +109,7 @@ def set_requirement_field(state: AgentState, field: str, value) -> ToolResult:
         )
     setattr(state.requirements, field, value)
     missing = state.requirements.missing_fields()
-    status = "✓ All required fields filled." if not missing else f"⚠ Still missing: {missing}"
+    status = "All required fields filled." if not missing else f"Still missing: {missing}"
     return ToolResult(
         type=ResultType.OBSERVATION,
         content=(
@@ -120,10 +122,10 @@ def set_requirement_field(state: AgentState, field: str, value) -> ToolResult:
 
 def get_requirements(state: AgentState) -> ToolResult:
     """
-    读取当前需求状态（READ 操作）。
+    Read and display the current requirements state (READ operation).
     """
     missing = state.requirements.missing_fields()
-    status = "✓ Complete." if not missing else f"⚠ Missing required fields: {missing}"
+    status = "Complete." if not missing else f"Missing required fields: {missing}"
     return ToolResult(
         type=ResultType.OBSERVATION,
         content=(

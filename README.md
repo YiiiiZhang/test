@@ -193,11 +193,96 @@ Save the final questionnaire locally and/or publish it to Google Forms.
 # 1. Install Python dependencies
 pip install torch transformers pydantic google-auth google-auth-oauthlib google-api-python-client
 
-# 2. Set model path in configs.json
+# 2. Set model path in configs.json (see Configuration section)
 
-# 3. Place Google OAuth credentials under ../KEYS/
-#    (GOOGLE_APPLICATION_CREDENTIALS and Token_json paths)
+# 3. Complete Google Forms API setup (see section below)
 ```
+
+---
+
+## Google Forms API Setup
+
+This section only applies when `save_survey.save_to_google_forms` is `true` in `configs.json`.  
+If you only need local JSON output, skip this entire section.
+
+### Step 1 — Create a Google Cloud Project
+
+1. Go to [https://console.cloud.google.com/](https://console.cloud.google.com/) and sign in.
+2. Click the project dropdown (top bar) → **New Project**.
+3. Give it any name (e.g. `qa-agent`) and click **Create**.
+
+### Step 2 — Enable the required APIs
+
+With your new project selected:
+
+1. Go to **APIs & Services → Library**.
+2. Search for **Google Forms API** → click it → **Enable**.
+3. Search for **Google Drive API** → click it → **Enable**.
+
+### Step 3 — Create OAuth 2.0 credentials
+
+1. Go to **APIs & Services → Credentials**.
+2. Click **Create Credentials → OAuth client ID**.
+3. If prompted to configure the consent screen first:
+   - Choose **External** (or Internal if using a Workspace account).
+   - Fill in the required fields (App name, support email). No logo needed.
+   - On the **Scopes** page you can skip adding scopes manually — the code requests them at runtime.
+   - On the **Test users** page, add the Google account you will authenticate with.
+   - Save and return to **Credentials**.
+4. Back in **Create OAuth client ID**:
+   - Application type: **Desktop app**.
+   - Name: anything (e.g. `qa-agent-desktop`).
+   - Click **Create**.
+5. Click **Download JSON** on the confirmation dialog (or click the download icon next to the credential later).
+
+### Step 4 — Place the credential file
+
+The default paths in `configs.json` expect a `KEYS/` directory **one level above the project root**:
+
+```
+parent_directory/
+├── KEYS/
+│   └── client_qa.googleusercontent.com.json   ← rename your downloaded file to this
+└── test/                                        ← project root (where cli.py lives)
+```
+
+Create the `KEYS/` folder and rename the downloaded JSON to match the filename in `GOOGLE_APPLICATION_CREDENTIALS`, or update `configs.json` to point to wherever you placed it:
+
+```json
+"GOOGLE_KEYS": {
+    "SCOPES": [
+        "https://www.googleapis.com/auth/forms.body",
+        "https://www.googleapis.com/auth/drive"
+    ],
+    "GOOGLE_APPLICATION_CREDENTIALS": "../KEYS/client_qa.googleusercontent.com.json",
+    "Token_json": "../KEYS/token.json"
+}
+```
+
+| Key | What to change |
+|---|---|
+| `GOOGLE_APPLICATION_CREDENTIALS` | Path to the OAuth client secret JSON you downloaded |
+| `Token_json` | Path where the access token will be **auto-created** on first login — the directory must exist |
+
+Both paths are relative to the project root (`test/`).
+
+### Step 5 — Authorize on first run
+
+The first time `execute_output` is called (Step 4 of the agent), the program will:
+
+1. Open a browser window asking you to sign in with Google.
+2. Show an OAuth consent screen — click **Continue** (you may see a "This app isn't verified" warning because the consent screen is in test mode; click **Advanced → Go to \<app name\>**).
+3. Grant the requested permissions (Forms + Drive).
+4. Return to the terminal automatically.
+
+The resulting token is saved to `Token_json`. **Subsequent runs reuse this token without opening a browser**, and it is refreshed automatically when it expires.
+
+> **Never commit the `KEYS/` directory or `token.json` to version control.**  
+> Add them to `.gitignore`:
+> ```
+> KEYS/
+> ../KEYS/
+> ```
 
 ---
 
@@ -294,3 +379,191 @@ Lightweight conversation memory:
 Wraps a local Qwen model loaded via Transformers:
 - `LocalQwenLLM(model_path, temperature, max_tokens, ...)`
 - `chat(messages: list[dict]) -> str` — applies the chat template and returns decoded output
+
+---
+
+## End-to-End Flow
+
+This section traces exactly what happens from the moment the user types a message to the moment a response is returned.
+
+```
+cli.py
+  └─ orchestrator.run(user_input)
+       │
+       │  1. Add user_input to ConversationContext
+       │
+       └─ Agent loop (up to max_iterations per turn)
+            │
+            │  2. Build system prompt
+            │       build_system_prompt(state)
+            │         ├─ BASE_PROMPT       (role + tool-call format)
+            │         ├─ _render_plan()    (visual step status)
+            │         ├─ _render_current_state()  (live state data)
+            │         ├─ _render_tools()   (global + step-specific tools)
+            │         └─ WORKFLOW_GUIDE
+            │
+            │  3. Call local LLM
+            │       llm.chat([system_prompt] + conversation_history)
+            │
+            │  4. Parse LLM response
+            │       ┌─ Contains ```json``` block?
+            │       │     YES → extract tool_name + tool_params
+            │       └─     NO  → return plain text directly to user
+            │
+            │  5. Dispatch tool call
+            │       _inject_and_call(tool_name, tool_params)
+            │         ├─ inspect.signature() detects llm/state/configs params
+            │         └─ calls the tool function with injected + LLM params
+            │
+            │  6. Route by ToolResult.type
+            │       OBSERVATION  → add result to context, increment iteration, loop
+            │       ASK_USER     → return result.content to user (end this turn)
+            │       STEP_DONE /
+            │       GOTO_STEP   → context.clear(), add step-change notice, loop
+            │       TASK_DONE   → return result.content to user (pipeline done)
+            │
+            └─ (repeat from step 2)
+```
+
+### State flow across turns
+
+```
+Turn 1:  run("I want a survey on...")
+          -> parse_requirements   [OBSERVATION]  loop
+          -> ask_user("What is the goal?")  [ASK_USER]  return to user
+
+Turn 2:  run("The goal is to measure satisfaction")
+          -> parse_requirements   [OBSERVATION]  loop
+          -> ask_user("How many questions?")  [ASK_USER]  return to user
+
+Turn 3:  run("About 12 questions please")
+          -> parse_requirements   [OBSERVATION]  loop
+          -> confirm_step(...)    [STEP_DONE]    context.clear(), advance step
+          -> generate_structure() [OBSERVATION]  loop
+          -> ask_user("Here is the draft structure...")  [ASK_USER]  return
+```
+
+The `AgentState` object lives in `QAOrchestrator` and is never reset between turns. Every `run()` call picks up exactly where the last one left off.
+
+---
+
+## Adding a New Tool
+
+This section explains how to extend the agent with a new tool, end to end.
+
+### Step 1 — Write the tool function
+
+Add a function to the appropriate `tools/` module (or create a new one).
+
+**Function signature rules:**
+- Declare `state: AgentState` as a parameter if you need to read or write step state.
+- Declare `llm: LocalQwenLLM` as a parameter if you need LLM inference.
+- Declare `configs: dict` as a parameter if you need runtime config values.
+- All other parameters are supplied by the LLM via `tool_params`.
+- Always return a `ToolResult`.
+
+```python
+# tools/requirement.py  (example of adding a new tool to an existing module)
+
+from tools.base import ToolResult, ResultType
+from state.models import AgentState
+
+def summarize_requirements(state: AgentState) -> ToolResult:
+    """Return a single-sentence plain-English summary of the confirmed requirements."""
+    req = state.requirements
+    summary = (
+        f"A {req.questionnaire_size or 'medium'}-length survey "
+        f"about '{req.survey_topic}' targeting {req.survey_object}, "
+        f"aimed at {req.survey_goal}."
+    )
+    return ToolResult(type=ResultType.OBSERVATION, content=summary)
+```
+
+Choose the correct `ResultType`:
+
+| Type | When to use |
+|---|---|
+| `OBSERVATION` | Normal result — the agent loop reads it and continues |
+| `ASK_USER` | You want to pause and show something to the user |
+| `STEP_DONE` | The current step is finished (only for `confirm_step`) |
+| `GOTO_STEP` | You jumped to a different step (only for `goto_step`) |
+| `TASK_DONE` | The entire pipeline is complete |
+
+### Step 2 — Register the tool in `agent.py`
+
+Open [agent.py](agent.py) and add the function to `_build_registry()`:
+
+```python
+# agent.py — inside _build_registry()
+
+from tools import requirement   # already imported
+
+self.tools_registry: dict[str, callable] = {
+    ...
+    # ── Step 1: requirement analysis ──
+    "parse_requirements":    requirement.parse_requirements,
+    "set_requirement_field": requirement.set_requirement_field,
+    "get_requirements":      requirement.get_requirements,
+    "summarize_requirements": requirement.summarize_requirements,   # <-- add this
+    ...
+}
+```
+
+The key is the exact name the LLM will use to call the tool. The orchestrator's
+`_inject_and_call()` handles dependency injection automatically — no other
+changes to `agent.py` are needed.
+
+### Step 3 — Expose the tool in the system prompt
+
+Open [prompts/builder.py](prompts/builder.py) and add an entry to `STEP_TOOL_META`
+under the appropriate step:
+
+```python
+# prompts/builder.py — inside STEP_TOOL_META[STEP_REQUIREMENT]
+
+STEP_TOOL_META = {
+    STEP_REQUIREMENT: {
+        ...
+        "summarize_requirements": {
+            "purpose": "Generate a one-sentence plain-English summary of the confirmed requirements.",
+            "params": "{}",
+        },
+    },
+    ...
+}
+```
+
+The `purpose` field is shown to the LLM so it knows when to call the tool.
+The `params` field shows the expected JSON parameter schema.
+
+### Step 4 — Test the tool
+
+```python
+# Quick smoke test (mocks torch/transformers)
+import sys, types
+from unittest.mock import MagicMock
+sys.modules["torch"] = MagicMock()
+sys.modules["torch"].dtype = type("dtype", (), {})
+sys.modules["transformers"] = MagicMock()
+
+from state.models import AgentState, RequirementState
+from tools.requirement import summarize_requirements
+
+state = AgentState()
+state.requirements = RequirementState(
+    survey_topic="online learning",
+    survey_object="university students",
+    survey_goal="measure satisfaction",
+    questionnaire_size="12",
+)
+result = summarize_requirements(state)
+print(result.type)     # observation
+print(result.content)  # A 12-length survey about 'online learning' ...
+```
+
+### Checklist
+
+- [ ] Tool function written and returns `ToolResult`
+- [ ] Tool registered in `_build_registry()` with a unique name
+- [ ] Tool metadata added to `STEP_TOOL_META` (or `GLOBAL_TOOL_META` if step-agnostic)
+- [ ] Tool tested in isolation

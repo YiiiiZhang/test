@@ -1,14 +1,15 @@
 """
 state/models.py
 ───────────────────────────────────────────────
-每个流程步骤维护一个独立的 **核心内容对象**（core state）。
-Agent 的工具只负责对这些对象做增删查改，而不是批量重生成。
+Each pipeline step maintains an independent core-content object (core state).
+Agent tools only perform CRUD operations on these objects rather than
+regenerating everything from scratch.
 """
 
 from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
-# ── 步骤名称常量 ───────────────────────────────────────────────────────────────
+# ── Step name constants ────────────────────────────────────────────────────────
 
 STEP_REQUIREMENT = "requirement_analysis"
 STEP_STRUCTURE   = "structure_planning"
@@ -24,13 +25,13 @@ STEP_GOALS = {
     STEP_OUTPUT:      "Produce the final survey (save locally and/or push to Google Forms).",
 }
 
-# ── 步骤状态 ───────────────────────────────────────────────────────────────────
+# ── Step status constants ──────────────────────────────────────────────────────
 
 PENDING     = "pending"
 IN_PROGRESS = "in_progress"
 COMPLETED   = "completed"
 
-# ── Step 1: 需求分析核心内容 ────────────────────────────────────────────────────
+# ── Step 1: requirement analysis core content ──────────────────────────────────
 
 _REQUIREMENT_REQUIRED_FIELDS = ["survey_topic", "survey_object", "survey_goal"]
 
@@ -51,7 +52,7 @@ class RequirementState(BaseModel):
         return [f for f in _REQUIREMENT_REQUIRED_FIELDS if not getattr(self, f)]
 
 
-# ── Step 2: 问卷结构核心内容 ────────────────────────────────────────────────────
+# ── Step 2: survey structure core content ─────────────────────────────────────
 
 class SectionItem(BaseModel):
     section_id:     str
@@ -79,7 +80,7 @@ class StructureState(BaseModel):
         return sum(s.question_count for s in self.sections)
 
 
-# ── Step 3: 题目核心内容 ────────────────────────────────────────────────────────
+# ── Step 3: question generation core content ──────────────────────────────────
 
 QuestionType = Literal["single_choice", "multiple_choice", "text"]
 
@@ -112,7 +113,7 @@ class QuestionsState(BaseModel):
         return [q for q in self.questions if q.section_id == section_id]
 
 
-# ── Step 4: 输出核心内容 ────────────────────────────────────────────────────────
+# ── Step 4: output core content ───────────────────────────────────────────────
 
 class OutputState(BaseModel):
     form_url:   Optional[str] = None
@@ -120,7 +121,7 @@ class OutputState(BaseModel):
     status:     Optional[str] = None
 
 
-# ── 全局 Agent 状态 ────────────────────────────────────────────────────────────
+# ── Global agent state ────────────────────────────────────────────────────────
 
 class AgentState(BaseModel):
     current_step:  str  = STEP_REQUIREMENT
@@ -133,16 +134,17 @@ class AgentState(BaseModel):
     questions:    QuestionsState   = Field(default_factory=QuestionsState)
     output:       OutputState      = Field(default_factory=OutputState)
 
-    # ── 导航 ──────────────────────────────────────────────────────────────────
+    # ── Navigation ────────────────────────────────────────────────────────────
 
     def goto(self, step: str) -> None:
-        """跳转到指定步骤（可以后退）。"""
+        """Jump to the specified step. Re-opens the step if it was already completed."""
         if self.step_statuses.get(step) == COMPLETED:
-            self.step_statuses[step] = IN_PROGRESS  # 重新开放已完成步骤
+            self.step_statuses[step] = IN_PROGRESS  # Re-open a completed step
         self.current_step = step
 
     def confirm_current_step(self) -> Optional[str]:
-        """标记当前步骤完成并自动前进到下一步，返回下一步名称（或 None）。"""
+        """Mark the current step as complete and advance to the next one.
+        Returns the next step name, or None if all steps are done."""
         self.step_statuses[self.current_step] = COMPLETED
         idx = STEP_ORDER.index(self.current_step)
         if idx + 1 < len(STEP_ORDER):
